@@ -1,0 +1,29 @@
+name: Feature request
+description: Something Fidelius or accio could do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Never paste a real key, a real `.env`, or a script that holds one. Use fake values.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The task or workflow, and where Fidelius gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you'd like it to work. Rough is fine.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options: [The app, accio, Working with AI agents, Backups, Something else]
+  - type: textarea
+    id: now
+    attributes:
+      label: What you do instead for now
+      description: A workaround, another tool, or nothing.

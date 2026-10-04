@@ -1,0 +1,39 @@
+name: Bug report
+description: Something in Fidelius or accio doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never paste a real key, a real `.env`, or output that shows a key. Use fake values.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. accio my-app ...
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Fidelius version
+      description: Fidelius > About Fidelius
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Which agent ran the command, if any
+      options: [I ran it myself, Claude Code, Codex, Gemini CLI, Other]
