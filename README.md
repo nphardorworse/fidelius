@@ -22,17 +22,17 @@ Or download it from the website. Then open Fidelius and choose Setup > Install a
 The app itself isn't open source. This repo is for:
 
 - **Issues.** Bug reports and feature requests for the app and `accio`.
-- **The agent skill.** [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md) tells an agent how to use your keys through `accio`. Fidelius can write the same rules into Claude Code's, Codex's and Gemini CLI's global instructions for you (Setup > Add to My Agents Automatically…). The skill is for other agents, or if you'd rather install it as a skill: `npx skills add nphardorworse/fidelius`. In Claude Code you can add it as a plugin instead of letting Fidelius edit CLAUDE.md: `/plugin marketplace add nphardorworse/fidelius`, then `/plugin install fidelius@fidelius`.
+- **The agent skill.** [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md) tells an agent how to use your keys through `accio`. Fidelius can write the same rules into Claude Code's, Codex's and Gemini CLI's global instructions for you (Setup > Add to My Agents Automatically…). The skill is for agents Fidelius doesn't set up, or if you'd rather not have your instructions file edited: `npx skills add nphardorworse/fidelius`, or in Claude Code as a plugin with `/plugin marketplace add nphardorworse/fidelius`, then `/plugin install fidelius@fidelius`. A skill only loads when the task looks related, while the rules in CLAUDE.md apply in every session, so the instructions file is the stronger setup.
 
 ## How it works with agents
 
 - When you choose Setup > Add to My Agents Automatically…, Fidelius adds a short section to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` and `~/.gemini/GEMINI.md` (for the agents you have), and shows you the change first. It tells the agent to run commands through `accio` and never to read or print a value.
 - Key files such as `.p8` and `.pem` reach the command as a path to a temporary file, deleted when the command ends.
-- When Claude Code or Codex runs `accio` and a key shows up in the output, accio replaces it with `<concealed by fidelius: NAME>` and says it did. This is best effort: it catches the exact value and its common encodings (base64, hex, URL and JSON escaping), for values of 6 characters or more, when the output goes to a pipe or a file, which is how agents read it. You can turn it off per key (Hide in agent output). Other agents get it when they set `FIDELIUS_MASK=1`, which the instructions tell them to do.
+- When Claude Code or Codex runs `accio` and a key shows up in the output, accio replaces it with `<concealed by fidelius: NAME>` and says it did. This is best effort: it catches the exact value and its common encodings (base64, hex, URL and JSON escaping), for values of 6 characters or more (3 or more for a key with Hide in agent output turned on), when the output goes to a pipe or a file, which is how agents read it. You can turn it off per key (Hide in agent output). Other agents get it when they set `FIDELIUS_MASK=1`, which the instructions tell them to do.
 
 ## What it doesn't protect against
 
-An agent that follows its instructions never sees a value. An agent that decides to misbehave can still get one:
+An agent that follows its instructions never reads or prints a value. An agent that decides to misbehave can still get one:
 
 - Running a command with `accio` doesn't ask for Touch ID. Touch ID guards Reveal and Copy in the app, but any program running as you can run `accio`, agents included. Treat it like shell access to your keys.
 - Masking can be switched off (`--no-mask`), and it doesn't catch a value that was changed (reversed, split, compressed), a value a command writes to a file and reads back, or output that goes straight to a terminal.
@@ -44,7 +44,7 @@ What Fidelius changes is where the keys sit. In normal use they're not in `.env`
 
 ## Where keys go
 
-- Your keys stay in your Keychain. With iCloud Keychain on, they sync end to end encrypted to your other Macs; with it off, they stay on this Mac. Fidelius has no server and no account.
+- Fidelius stores your keys in your Keychain. With iCloud Keychain on, they sync end to end encrypted to your other Macs; with it off, they stay on this Mac. Fidelius has no server and no account.
 - The app makes two kinds of network request: the license check with Polar, and Sparkle's update check. No analytics, no crash reporting.
 - Backups are off until you turn them on, and are encrypted with a password only you know.
 
