@@ -22,7 +22,7 @@ Or download it from the website. Then open Fidelius and choose Setup > Install a
 The app itself isn't open source. This repo is for:
 
 - **Issues.** Bug reports and feature requests for the app and `accio`.
-- **The agent skill.** [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md) tells an agent how to use your keys through `accio`. Fidelius can write the same rules into Claude Code's, Codex's and Gemini CLI's global instructions for you (Setup > Add to My Agents Automatically…). The skill is for other agents, or if you'd rather install it as a skill: `npx skills add nphardorworse/fidelius`.
+- **The agent skill.** [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md) tells an agent how to use your keys through `accio`. Fidelius can write the same rules into Claude Code's, Codex's and Gemini CLI's global instructions for you (Setup > Add to My Agents Automatically…). The skill is for other agents, or if you'd rather install it as a skill: `npx skills add nphardorworse/fidelius`. In Claude Code you can add it as a plugin instead of letting Fidelius edit CLAUDE.md: `/plugin marketplace add nphardorworse/fidelius`, then `/plugin install fidelius@fidelius`.
 
 ## How it works with agents
 

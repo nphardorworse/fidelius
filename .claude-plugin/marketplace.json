@@ -1,0 +1,15 @@
+{
+  "name": "fidelius",
+  "description": "The Fidelius agent skill as a Claude Code plugin.",
+  "owner": {
+    "name": "Bliss Labs",
+    "url": "https://fidelius.blisslabs.dev"
+  },
+  "plugins": [
+    {
+      "name": "fidelius",
+      "source": "./",
+      "description": "Teaches Claude Code to run commands through accio, so a project's API keys come from the Mac Keychain instead of a .env file. Needs the Fidelius Mac app (free for one project)."
+    }
+  ]
+}
