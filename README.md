@@ -22,23 +22,34 @@ Or download it from the website. Then open Fidelius and choose Setup > Install a
 The app itself isn't open source. This repo is for:
 
 - **Issues.** Bug reports and feature requests for the app and `accio`.
-- **The agent skill.** [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md) tells an agent how to use your keys through `accio`. Fidelius can write the same rules into Claude Code's, Codex's and Gemini CLI's global instructions for you (Setup > Add to My Agents Automatically…). The skill is for agents Fidelius doesn't set up, or if you'd rather not have your instructions file edited: `npx skills add nphardorworse/fidelius`, or in Claude Code as a plugin with `/plugin marketplace add nphardorworse/fidelius`, then `/plugin install fidelius@fidelius`. A skill only loads when the task looks related, while the rules in CLAUDE.md apply in every session, so the instructions file is the stronger setup.
+- **The agent skill.** [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md) tells an agent how to use your keys through `accio`. Fidelius can write the same rules into Claude Code's, Codex's and Gemini CLI's global instructions for you (Setup > Add to My Agents Automatically…). The skill is for agents Fidelius doesn't set up, or if you'd rather not have your instructions file edited: `npx skills@1.7.1 add nphardorworse/fidelius`, or in Claude Code as a plugin with `/plugin marketplace add nphardorworse/fidelius`, then `/plugin install fidelius@fidelius`. A skill only loads when the task looks related, while the rules in CLAUDE.md apply in every session, so the instructions file is the stronger setup.
+
+## What the plugin does
+
+Its only active part is one Markdown skill, [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md). It has no hooks, MCP servers or scripts, and it sends nothing by itself. It tells Claude to run `accio`, which the Fidelius app installs (the plugin doesn't include it):
+
+- `accio list` and `accio list <project> --json` show project and variable names, never values.
+- `accio <project> <command>` runs a command with that project's keys as environment variables.
+- `accio import` opens Fidelius's Import preview for a `.env`. Nothing is saved until you click Import.
+- `accio export --example` writes a `.env.example` with the variable names only.
+
+A command run through `accio` gets your keys, and it may send them to the service it calls, the same as it would with a `.env`.
 
 ## How it works with agents
 
 - When you choose Setup > Add to My Agents Automatically…, Fidelius adds a short section to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` and `~/.gemini/GEMINI.md` (for the agents you have), and shows you the change first. It tells the agent to run commands through `accio` and never to read or print a value.
 - Key files such as `.p8` and `.pem` reach the command as a path to a temporary file, deleted when the command ends.
-- When Claude Code or Codex runs `accio` and a key shows up in the output, accio replaces it with `<concealed by fidelius: NAME>` and says it did. This is best effort: it catches the exact value and its common encodings (base64, hex, URL and JSON escaping), for values of 6 characters or more (3 or more for a key with Hide in agent output turned on), when the output goes to a pipe or a file, which is how agents read it. You can turn it off per key (Hide in agent output). Other agents get it when they set `FIDELIUS_MASK=1`, which the instructions tell them to do.
+- When Claude Code or Codex runs `accio` and a key shows up in the output, accio replaces it with `<concealed by fidelius: NAME>` and says it did. This is best effort: it catches the exact value and its common encodings (base64, hex, URL and JSON escaping), for values of 6 characters or more, when the output goes to a pipe or a file, which is how agents read it. You can turn it off per key (Hide in agent output). Other agents get it when they set `FIDELIUS_MASK=1`, which the instructions tell them to do.
 
 ## What it doesn't protect against
 
-An agent that follows its instructions never reads or prints a value. An agent that decides to misbehave can still get one:
+The instructions tell an agent never to read or print a value. An agent that ignores them can still get one:
 
 - Running a command with `accio` doesn't ask for Touch ID. Touch ID guards Reveal and Copy in the app, but any program running as you can run `accio`, agents included. Treat it like shell access to your keys.
 - Masking can be switched off (`--no-mask`), and it doesn't catch a value that was changed (reversed, split, compressed), a value a command writes to a file and reads back, or output that goes straight to a terminal.
 - Keys are readable once the Mac has been unlocked after a restart, so `accio` keeps working while the screen is locked.
 
-Masking is a second line for accidents, like a test printing a key. Your agent's own permission settings are what stop a rogue command.
+Masking is a second line for accidents, like a test printing a key. Your agent's own permission settings are what limit a rogue command.
 
 What Fidelius changes is where the keys sit. In normal use they're not in `.env` files, shell history or a plain text file in your home folder, where any agent can read them by accident. (You can still export a `.env` for a tool that insists on one. Fidelius asks for Touch ID first.)
 

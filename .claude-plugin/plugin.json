@@ -1,6 +1,7 @@
 {
   "name": "fidelius",
   "description": "Teaches Claude Code to run commands through accio, so a project's API keys come from the Mac Keychain instead of a .env file. Needs the Fidelius Mac app (free for one project).",
+  "version": "1.0.0",
   "author": {
     "name": "Bliss Labs",
     "url": "https://fidelius.blisslabs.dev"
