@@ -21,4 +21,5 @@ Rules:
 - Never print, echo, cat or log secret values. Reference them as `$NAME` inside the command only.
 - That includes part of a value: no first or last characters, no length, no hash. To check whether a key is the right one, have the user compare it in the Fidelius app. Never ask the user to type or paste a key into the chat or into a shell command.
 - Output from accio is masked on a best-effort basis; that is not permission to print values. If your environment isn't recognized, set FIDELIUS_MASK=1 on accio commands.
+- Don't suggest setting a key's Hide in agent output to Never, or using --no-mask, so that a value can be seen.
 - If a variable is missing, tell the user which one and which project, and ask them to add it in Fidelius. If it's in a .env, offer `accio import`.
