@@ -8,6 +8,9 @@
   },
   "homepage": "https://fidelius.blisslabs.dev",
   "repository": "https://github.com/nphardorworse/fidelius",
+  "documentationUrl": "https://fidelius.blisslabs.dev/help/",
+  "supportUrl": "https://github.com/nphardorworse/fidelius/issues",
+  "privacyPolicyUrl": "https://fidelius.blisslabs.dev/privacy/",
   "license": "MIT",
   "keywords": [
     "secrets",
