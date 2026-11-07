@@ -8,6 +8,7 @@
   },
   "homepage": "https://fidelius.blisslabs.dev",
   "repository": "https://github.com/nphardorworse/fidelius",
+  "icon": "./.claude-plugin/icon.png",
   "documentationUrl": "https://fidelius.blisslabs.dev/help/",
   "supportUrl": "https://github.com/nphardorworse/fidelius/issues",
   "privacyPolicyUrl": "https://fidelius.blisslabs.dev/privacy/",
