@@ -35,6 +35,18 @@ Its only active part is one Markdown skill, [`skills/fidelius/SKILL.md`](skills/
 
 A command run through `accio` gets your keys, and it may send them to the service it calls, the same as it would with a `.env`.
 
+## Check for keys Claude Code has saved
+
+Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it. After installing the plugin, run:
+
+```
+/fidelius:audit
+```
+
+It scans the settings files in your home folder and their git history, and reports which keys were pushed, which were only committed and which never left your Mac. It needs Python 3 and git, and it doesn't need the Fidelius app. A local script does the scanning, and its report never contains a value, so the keys stay out of your Claude conversation. It finds passwords typed inside commands as well as known key formats. It only sees this Mac and its local clones, so a clean result doesn't prove a key never leaked.
+
+Add `--github` to check whether pushed repos are public, through your own `gh` login. You can also run the script directly: `skills/audit/scripts/audit.py`.
+
 ## How it works with agents
 
 - When you choose Setup > Add to My Agents Automatically…, Fidelius adds a short section to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` and `~/.gemini/GEMINI.md` (for the agents you have), and shows you the change first. It tells the agent to run commands through `accio` and never to read or print a value.
