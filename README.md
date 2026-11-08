@@ -43,7 +43,7 @@ Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings
 /fidelius:audit
 ```
 
-It scans the settings files in your home folder and their git history, and reports which keys are on a remote branch, which were only committed and which weren't found in git. It needs Python 3 and git, and it doesn't need the Fidelius app. A local script does the scanning, and its report doesn't include the keys it finds, so they stay out of your Claude conversation. It finds passwords typed inside commands as well as known key formats. It only sees this Mac and its local clones, so a clean result doesn't prove a key never leaked.
+It scans the settings files in your home folder and their git history, and reports which keys are on a remote branch, which were only committed and which weren't found in git. It runs on macOS and Linux, needs Python 3 and git, and doesn't need the Fidelius app. Windows isn't supported. A local script does the scanning, and its report doesn't include the keys it finds, so they stay out of your Claude conversation. It finds passwords typed inside commands as well as known key formats. It only sees this computer and its local clones, so a clean result doesn't prove a key never leaked.
 
 Add `--github` to check whether pushed repos are public, through your own `gh` login. You can also run the script directly: `skills/audit/scripts/audit.py`.
 

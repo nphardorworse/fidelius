@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 SETTINGS_NAMES = ("settings.local.json", "settings.json")
-SKIP_DIRS = {"node_modules", ".Trash", ".cache", ".npm", ".venv", "venv", "__pycache__", "DerivedData", "Pods", "build.noindex"}
+SKIP_DIRS = {"node_modules", ".Trash", "Trash", ".cache", ".npm", ".venv", "venv", "__pycache__", "DerivedData", "Pods", "build.noindex"}
 MAX_FILE_BYTES = 5_000_000
 MAX_STRING = 16_384
 MAX_COMMITS = 5000
@@ -69,7 +69,7 @@ PLACEHOLDER = re.compile(r"^(?:your[-_]\S*|my[-_](?:password|secret|token|key)\S
 EXPOSURE_RANK = {"pushed": 0, "unknown": 1, "committed": 2, "local": 3}
 CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
 LIMITS = [
-    "Only this Mac and its local clones were checked. Forks and other people's clones are out of reach.",
+    "Only this computer and its local clones were checked. Forks and other people's clones are out of reach.",
     "Whether a commit was pushed comes from this clone's remote branches as of its last fetch.",
     "A clean result doesn't prove a key never leaked. Passwords in unusual shapes can be missed.",
     "Agent transcripts, memory files and .env files were not scanned.",
@@ -517,7 +517,7 @@ def git_fix(state):
     if state == "not ignored":
         return ["Git doesn't ignore this file. From the folder that holds .claude:", IGNORE_FIX]
     if state == "ignored on this machine only":
-        return ["Only this Mac ignores this file. From the folder that holds .claude:", IGNORE_FIX]
+        return ["Only this computer ignores this file. From the folder that holds .claude:", IGNORE_FIX]
     return []
 
 
@@ -548,7 +548,7 @@ def render(report, color=False):
     if scanned["skipped_links"]:
         notes += ["  Symbolic links, not followed. Scan the folder they point to as well:"] + [f"    {path}" for path in scanned["skipped_links"]]
     if scanned["unreadable_folders"]:
-        notes.append(f"  {scanned['unreadable_folders']} folders couldn't be read. macOS may need folder access for this terminal.")
+        notes.append(f"  {scanned['unreadable_folders']} folders couldn't be read. This terminal may need permission to open them.")
     if scanned["incomplete_details"]:
         notes += ["  Repos only partly checked. Anything found in them is listed above as possibly pushed:"]
         notes += table([[item["repo"], item["reason"]] for item in scanned["incomplete_details"]])

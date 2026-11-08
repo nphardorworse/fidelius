@@ -285,6 +285,10 @@ class EndToEnd(unittest.TestCase):
         self.settings(self.home / "Library" / "App", [GH])
         self.assertEqual(self.run_audit()["secrets"], [])
 
+    def test_linux_trash_is_skipped(self):
+        self.settings(self.home / ".local" / "share" / "Trash" / "files" / "old", [GH])
+        self.assertEqual(self.run_audit()["secrets"], [])
+
     def test_broken_json_is_counted_and_nothing_crashes(self):
         path = self.settings(self.home / "bad", [])
         path.write_text('{"permissions": ' + PW)
