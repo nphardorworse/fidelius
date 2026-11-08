@@ -10,7 +10,7 @@ allowed-tools:
 
 # Audit saved keys
 
-Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it. This audit finds those on the user's Mac and reports how far each one has travelled. The script never prints a value.
+Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it. This audit finds those on the user's Mac and reports how far each one has travelled. The script never prints the values it finds.
 
 ## Hard rules
 
@@ -35,10 +35,10 @@ Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings
 
 3. If anything was pushed or its status is unknown, say first that the key must be changed at its provider before any cleanup, because removing it from the latest commit leaves it in history, forks and clones. Never suggest saving a pushed value anywhere.
 
-4. For each repo where a `settings.local.json` is tracked, give the user these commands to run themselves from the repo root, using the path from the report, and tell them to check `git status` before committing:
+4. For each repo the user trusts where a `settings.local.json` is tracked, give them these commands to run themselves from the folder that holds its `.claude` folder. Never paste a path from the report into a shell command. Tell them to check `git status` before committing, since git reads that repo's own config:
 
    ```
-   git rm --cached <path from the report>
+   git rm --cached -- .claude/settings.local.json
    printf '\n**/.claude/settings.local.json\n' >> .gitignore
    ```
 

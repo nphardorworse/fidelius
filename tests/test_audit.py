@@ -98,6 +98,34 @@ class Detect(unittest.TestCase):
         ):
             self.assertFound(text, value)
 
+    def test_round_two_shapes(self):
+        for text, value in (
+            (f'Bash(ssh host "PGPASSWORD={PW} psql -h db.example.com")', PW),
+            ("Bash(PGPASSWORD='$3cret-value' psql -h db.example.com)", "$3cret-value"),
+            (f"Bash(PGPASSWORD=my_real_{PW} psql -h db.example.com)", f"my_real_{PW}"),
+            (f"Bash(psql 'host=db.example.com password={PW}')", PW),
+            (f"Bash(redis-cli -h cache.example.com -a {PW})", PW),
+            (f"Bash(docker login -u me -p {PW} registry.example.com)", PW),
+        ):
+            self.assertFound(text, value)
+
+    def test_round_two_false_positives(self):
+        for text in (
+            "Bash(GOOGLE_TOKEN_PATH=/tmp/creds.json ./run)",
+            "Bash(PASSWORD_FILE=/run/secrets/db ./run)",
+            f'Bash(curl -H "Authorization: Bearer {jwt("anon")}" https://x.example.com)',
+        ):
+            self.assertEqual(audit.detect(text), [], text)
+
+    def test_many_matches_stay_fast(self):
+        started = time.time()
+        audit.detect(" ".join(f"--token value{i}" for i in range(1400)) + " a-" * 2000)
+        self.assertLess(time.time() - started, 5)
+
+    def test_every_transfer_protocol_is_refused(self):
+        for name in ("ext", "file", "ssh", "git", "http", "https"):
+            self.assertIn(f"protocol.{name}.allow=never", audit.SAFE_GIT)
+
     def test_private_network_is_not_treated_as_local(self):
         self.assertNotEqual(audit.detect(f"PGPASSWORD={PW} psql -h 10.0.12.5")[0][2], "low")
         self.assertEqual(audit.detect(f"PGPASSWORD={PW} psql -h db.example.com --note localhost")[0][2], "high")
@@ -463,6 +491,118 @@ class EndToEnd(unittest.TestCase):
         report = self.run_audit()
         self.assertEqual(report["scanned"]["repos"], 1)
         self.assertEqual(sum(loc["state"] == "history" for loc in self.secret(report)["locations"]), 1)
+
+    def push(self, repo):
+        remote = self.home / f"{repo.name}-remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], env=self.env, check=True)
+        self.git(repo, "remote", "add", "origin", str(remote))
+        self.git(repo, "push", "-q", "-u", "origin", "main")
+
+    def test_report_is_not_an_oracle_for_short_values(self):
+        self.settings(self.home / "postgres-demo", ["Bash(PGPASSWORD=postgres psql -h db.example.com)"])
+        report = self.run_audit()
+        self.assertIn("postgres-demo", report["secrets"][0]["locations"][0]["file"])
+        self.assertIn("settings.local.json", self.output)
+
+    def test_folder_named_after_a_different_secret_is_hidden(self):
+        self.settings(self.home / GH, [AWS])
+        self.run_audit()
+        self.assertNotIn(GH, self.output)
+
+    def test_secret_used_only_as_a_json_key_is_found(self):
+        self.settings(self.home / "keys", {GH: "x"})
+        self.assertEqual(self.secret(self.run_audit())["kind"], "GitHub token")
+
+    def test_force_pushed_away_still_counts_as_pushed(self):
+        repo = self.repo("forced")
+        self.push(repo)
+        path = self.settings(repo, [GH])
+        self.git(repo, "add", "-f", str(path))
+        self.git(repo, "commit", "-qm", "oops")
+        self.git(repo, "push", "-q", "origin", "main")
+        self.git(repo, "reset", "-q", "--hard", "HEAD~1")
+        self.git(repo, "push", "-qf", "origin", "main")
+        self.assertEqual(self.secret(self.run_audit())["exposure"], "pushed")
+
+    def test_secret_added_in_a_merge_commit(self):
+        repo = self.repo("evilmerge")
+        self.git(repo, "checkout", "-qb", "side")
+        (repo / "b").write_text("b")
+        self.git(repo, "add", "b")
+        self.git(repo, "commit", "-qm", "side")
+        self.git(repo, "checkout", "-q", "main")
+        self.git(repo, "merge", "-q", "--no-ff", "--no-commit", "side")
+        path = self.settings(repo, [GH])
+        self.git(repo, "add", "-f", str(path))
+        self.git(repo, "commit", "-qm", "merge")
+        self.git(repo, "rm", "-q", str(path))
+        self.git(repo, "commit", "-qm", "remove")
+        self.secret(self.run_audit())
+
+    def test_secret_in_the_root_commit_with_show_root_off(self):
+        repo = self.home / "rooted"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "main")
+        path = self.settings(repo, [GH])
+        self.git(repo, "add", "-f", str(path))
+        self.git(repo, "commit", "-qm", "first")
+        self.git(repo, "rm", "-q", str(path))
+        self.git(repo, "commit", "-qm", "remove")
+        self.git(repo, "config", "log.showRoot", "false")
+        self.secret(self.run_audit())
+
+    def test_unparseable_historic_version_makes_the_result_unknown(self):
+        repo = self.repo("conflict")
+        path = self.settings(repo, [])
+        path.write_text("<<<<<<< HEAD\n{}\n=======\n")
+        self.git(repo, "add", "-f", str(path))
+        self.git(repo, "commit", "-qm", "conflict")
+        self.settings(repo, [GH])
+        self.assertEqual(self.secret(self.run_audit())["exposure"], "unknown")
+
+    def test_home_config_folder_that_is_a_repo(self):
+        repo = self.home / ".claude"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "main")
+        (repo / "settings.json").write_text(json.dumps({"permissions": {"allow": [GH]}}))
+        self.git(repo, "add", "settings.json")
+        self.git(repo, "commit", "-qm", "first")
+        self.git(repo, "rm", "-q", "settings.json")
+        self.git(repo, "commit", "-qm", "remove")
+        self.assertEqual(self.secret(self.run_audit())["exposure"], "committed")
+
+    def test_exported_git_dir_does_not_collapse_repos(self):
+        one = self.repo("one")
+        two = self.repo("two")
+        for repo in (one, two):
+            path = self.settings(repo, [GH + repo.name])
+            self.git(repo, "add", "-f", str(path))
+            self.git(repo, "commit", "-qm", "oops")
+        env = dict(self.env, GIT_DIR=str(one / ".git"))
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.home), "--json"], env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(json.loads(result.stdout)["scanned"]["repos"], 2)
+
+    def test_symlinked_settings_are_listed(self):
+        target = self.settings(self.home / "dotfiles", ["Bash(ls)"])
+        link = self.home / "app" / ".claude" / "settings.json"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(target)
+        self.assertEqual(len(self.run_audit()["scanned"]["skipped_links"]), 1)
+
+    def test_claude_config_dir_is_scanned(self):
+        config = self.home / "outside-config"
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps({"permissions": {"allow": [GH]}}))
+        scan = self.home / "scan"
+        scan.mkdir()
+        env = dict(self.env, CLAUDE_CONFIG_DIR=str(config))
+        result = subprocess.run([sys.executable, str(SCRIPT), str(scan), "--json"], env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(len(json.loads(result.stdout)["secrets"]), 1)
+
+    def test_missing_folder_is_an_error_not_a_clean_result(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.home / "nope")], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("Found 0", result.stdout)
 
     def test_clean_home_reports_nothing(self):
         self.settings(self.home / "ok", ["Bash(npm run test *)"])

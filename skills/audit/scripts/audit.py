@@ -46,11 +46,14 @@ PROVIDERS = [
 JWT = re.compile(r"eyJ[A-Za-z0-9_-]+\.(eyJ[A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+")
 
 VALUE = r"""(?P<v>"[^"]*"|'[^']*'|[^\s;&|)'"]+)"""
-ASSIGNMENT = re.compile(r"(?:^|[\s(;&|])(?P<name>[A-Z][A-Z0-9_]*)=" + VALUE)
+ASSIGNMENT = re.compile(r"(?:^|[\s(;&|\"'=])(?P<name>[A-Z][A-Z0-9_]*)=" + VALUE)
 COMMAND_SHAPES = [
     ("Password in a command", r"\bsshpass\s+-p\s*" + VALUE),
     ("Password in a command", r"\b(?:mysql|mysqldump|mysqladmin|mariadb)\b[^|;&]*?\s-p" + VALUE),
     ("Password in a command", r"\s--(?:password|passwd|pass|token|api-?key|secret|auth-token|access-token|client-secret)[= ]\s*" + VALUE),
+    ("Password in a command", r"(?<![-\w])password=" + VALUE),
+    ("Password in a command", r"\bredis-cli\b[^|;&]*?\s-a\s+" + VALUE),
+    ("Password in a command", r"\bdocker\s+login\b[^|;&]*?\s(?:-p|--password)\s+" + VALUE),
     ("Password in a command", r"\b(?:curl|wget)\b[^|;&]*?\s(?:-u|--user)\s+['\"]?[^\s:'\"]+:(?P<v>[^\s'\")]+)"),
     ("Token in a request header", r"(?i)authorization:\s*(?:bearer|token|basic)\s+(?P<v>[^\s'\")]+)"),
     ("Token in a request header", r"(?i)(?:x-api-key|x-auth-token|api-key|apikey):\s*(?P<v>[^\s'\")]+)"),
@@ -59,8 +62,8 @@ COMMAND_SHAPES = [
 COMPILED_PROVIDERS = [(kind, re.compile(rx)) for kind, rx in PROVIDERS]
 COMPILED_SHAPES = [(kind, re.compile(rx)) for kind, rx in COMMAND_SHAPES]
 LOOPBACK = re.compile(r"\b(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\.internal)\b|\[::1\]", re.I)
-ANY_HOST = re.compile(r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", re.I)
-PLACEHOLDER = re.compile(r"^(?:your[-_]|my[-_]|example|changeme|change[-_]me|placeholder|redacted|xxx+|password$|secret$|token$|test$|true$|false$)", re.I)
+ANY_HOST = re.compile(r"\b(?:[a-z0-9-]{1,63}\.)+[a-z]{2,}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", re.I)
+PLACEHOLDER = re.compile(r"^(?:your[-_]\S*|my[-_](?:password|secret|token|key)\S*|example(?:[-_]\S*)?|changeme|change[-_]me|placeholder|redacted|xxx+|password|secret|token|test|true|false)$", re.I)
 
 EXPOSURE_RANK = {"pushed": 0, "unknown": 1, "committed": 2, "local": 3}
 CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -70,15 +73,27 @@ LIMITS = [
     "A clean result doesn't prove a key never leaked. Passwords in unusual shapes can be missed.",
     "Agent transcripts, memory files and .env files were not scanned.",
     "No key was tested. A finding means it looks like a secret, not that it still works.",
+    "Only the first 16 KB of each setting was checked.",
 ]
 
 # Overrides for anything in a repository's own config that could run a program or reach the network.
-SAFE_GIT = ["-c", "core.fsmonitor=false", "-c", "log.showSignature=false", "-c", "core.sshCommand=false",
+SAFE_GIT = ["-c", "core.fsmonitor=false", "-c", "log.showSignature=false", "-c", "log.showRoot=true", "-c", "core.sshCommand=false",
             "-c", "protocol.allow=never", "-c", "safe.bareRepository=explicit"]
+for _protocol in ("ext", "file", "ssh", "git", "http", "https"):  # A repo's protocol.<name>.allow would beat protocol.allow.
+    SAFE_GIT += ["-c", f"protocol.{_protocol}.allow=never"]
+
+# Variables that would point every git call at one repository instead of the folder asked about.
+LOCAL_GIT_VARS = {
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX", "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE", "GIT_WORK_TREE",
+}
 
 
 def is_secret_name(name):
     parts = name.upper().split("_")
+    if parts[-1] in ("FILE", "PATH", "NAME", "URL", "ARN", "ID"):
+        return False
     if any(p in ("PASS", "SSHPASS", "PGPASS", "APIKEY") or p.endswith(("PASSWORD", "PASSWD", "SECRET", "TOKEN")) for p in parts):
         return True
     if len(parts) > 1 and "PWD" in parts:
@@ -86,22 +101,17 @@ def is_secret_name(name):
     return any(f"{a}_{b}" in ("API_KEY", "ACCESS_KEY", "PRIVATE_KEY") for a, b in zip(parts, parts[1:]))
 
 
-def is_placeholder(value):
-    return len(value) < 4 or value[0] in "$<*" or value.startswith("{{") or bool(PLACEHOLDER.match(value))
+def is_placeholder(value, literal=False):
+    """Single quotes stop the shell expanding anything, so a leading $ or * is then part of a real value."""
+    if len(value) < 4 or PLACEHOLDER.match(value) or (value[0] == "<" and value[-1] == ">"):
+        return True
+    return not literal and (value[0] in "$<*" or value.startswith("{{"))
 
 
-def skip_named_value(name, value):
+def skip_named_value(name, value, literal=False):
     """A number under a TOKEN-style name is usually a limit. Under a password name it can be real."""
     upper = name.upper()
-    return is_placeholder(value) or (value.isdigit() and "PASS" not in upper and "PWD" not in upper)
-
-
-def confidence(text, value):
-    rest = text.replace(value, " ")
-    without_loopback = LOOPBACK.sub(" ", rest)
-    if ANY_HOST.search(without_loopback):
-        return "high"
-    return "low" if without_loopback != rest else "medium"
+    return is_placeholder(value, literal) or (value.isdigit() and "PASS" not in upper and "PWD" not in upper)
 
 
 def jwt_kind(body):
@@ -126,18 +136,26 @@ def detect(text):
         if kind:
             found[match.group(0)] = (kind, "high" if kind.startswith("Supabase") else "medium")
 
+    without_loopback = LOOPBACK.sub(" ", text)  # Worked out once: per match this was quadratic on hostile input.
+    hosts = [match.group(0) for match in ANY_HOST.finditer(without_loopback)]
+
     def add(kind, value):
-        if not any(value in known or known in value for known in found):
-            found[value] = (kind, confidence(text, value))
+        whole_jwt = JWT.fullmatch(value)
+        if (whole_jwt and not jwt_kind(whole_jwt.group(1))) or any(value in known or known in value for known in found):
+            return
+        conf = "high" if any(host not in value for host in hosts) else "low" if without_loopback != text else "medium"
+        found[value] = (kind, conf)
 
     for match in ASSIGNMENT.finditer(text):
-        value = match.group("v").strip("\"'")
-        if is_secret_name(match.group("name")) and not skip_named_value(match.group("name"), value):
+        raw = match.group("v")
+        value = raw.strip("\"'")
+        if value and is_secret_name(match.group("name")) and not skip_named_value(match.group("name"), value, raw[0] == "'"):
             add("Password in a command", value)
     for kind, pattern in COMPILED_SHAPES:
         for match in pattern.finditer(text):
-            value = match.group("v").strip("\"'")
-            if not is_placeholder(value):
+            raw = match.group("v")
+            value = raw.strip("\"'")
+            if value and not is_placeholder(value, raw[0] == "'"):
                 add(kind, value)
     return [(kind, value, conf) for value, (kind, conf) in found.items()]
 
@@ -148,6 +166,8 @@ def walk_strings(node, where="", key="", parent=""):
         for position, (child_key, child) in enumerate(node.items(), 1):
             if child_key != "$schema":
                 label = child_key if child_key in KNOWN_KEYS else f"entry-{position}"
+                if child_key not in KNOWN_KEYS:
+                    yield f"{where}.{label}" if where else label, child_key, "", ""
                 yield from walk_strings(child, f"{where}.{label}" if where else label, child_key, key)
     elif isinstance(node, list):
         for index, child in enumerate(node):
@@ -167,20 +187,21 @@ def scan_document(document):
     return results
 
 
-def git(repo, *args, timeout=60):
+def git(repo, *args, timeout=60, stdin=b""):
     """Run git so that nothing in the repository's own config can execute or fetch."""
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1")
+    env = {key: value for key, value in os.environ.items() if key not in LOCAL_GIT_VARS}
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1")
     try:
-        done = subprocess.run(["git", *SAFE_GIT, "-C", repo, *args], env=env, stdin=subprocess.DEVNULL,
+        done = subprocess.run(["git", *SAFE_GIT, "-C", repo, *args], env=env, input=stdin,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
-        return 1, b""
+        return -1, b""  # Never 1: git uses 1 for real answers such as "not ignored".
     return done.returncode, done.stdout
 
 
 def discover(root):
-    """Return (settings files, git repos, unreadable folder count) under root, without following links."""
-    settings, repos, errors = [], [], []
+    """Return (settings files, git repos, unreadable folder count, skipped links) under root, without following links."""
+    settings, repos, errors, links = [], [], [], []
     for dirpath, dirnames, filenames in os.walk(root, onerror=errors.append, followlinks=False):
         if os.path.basename(dirpath) == ".claude":
             for name in SETTINGS_NAMES:
@@ -188,10 +209,16 @@ def discover(root):
                 try:
                     if name in filenames and stat.S_ISREG(os.lstat(path).st_mode):
                         settings.append(path)
+                    elif name in filenames and os.path.islink(path):
+                        links.append(path)
                 except OSError:
                     pass
+            if ".git" in dirnames or ".git" in filenames:
+                repos.append(dirpath)  # A config folder kept under version control.
             dirnames[:] = [d for d in dirnames if d == "worktrees"]
             continue
+        if ".claude" in dirnames and os.path.islink(os.path.join(dirpath, ".claude")):
+            links.append(os.path.join(dirpath, ".claude"))
         if dirpath == root and "Library" in dirnames:
             dirnames.remove("Library")
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -199,7 +226,13 @@ def discover(root):
             repos.append(dirpath)
             if ".git" in dirnames:
                 dirnames.remove(".git")
-    return settings, repos, len(errors)
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config:
+        for name in SETTINGS_NAMES:
+            path = os.path.realpath(os.path.join(os.path.expanduser(config), name))
+            if os.path.isfile(path) and path not in settings:
+                settings.append(path)
+    return settings, repos, len(errors), links
 
 
 def parse(raw):
@@ -263,19 +296,20 @@ def github_visibility(repo):
         return "unknown"
     _, names = git(repo, "remote")
     seen = set()
-    for name in os.fsdecode(names).split():
+    for name in os.fsdecode(names).split() or [""]:
         _, url = git(repo, "remote", "get-url", "--", name)
         match = re.search(r"github\.com[:/]([A-Za-z0-9_][\w.-]*)/([A-Za-z0-9_][\w.-]*?)(?:\.git)?/?$", os.fsdecode(url).strip())
         if not match:
+            seen.add("unknown")
             continue
         try:
             done = subprocess.run(["gh", "repo", "view", f"{match[1]}/{match[2]}", "--json", "visibility", "--jq", ".visibility"],
                                   stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20, cwd=os.path.expanduser("~"))
         except (OSError, subprocess.TimeoutExpired):
+            seen.add("unknown")
             continue
-        if done.returncode == 0:
-            seen.add(done.stdout.strip().lower())
-    return "public" if "public" in seen else "private" if seen else "unknown"
+        seen.add(done.stdout.strip().lower() if done.returncode == 0 else "unknown")
+    return "public" if "public" in seen else "unknown" if "unknown" in seen else "private"
 
 
 def action_for(secret):
@@ -301,11 +335,13 @@ class Audit:
     def __init__(self, root, home):
         self.root, self.home = root, home
         self.by_value = {}
-        self.pushed_cache = {}
+        self.remote_cache = {}
         self.incomplete = set()
 
     def show(self, path):
-        return safe("~" + path[len(self.home):] if path.startswith(self.home + os.sep) else path)
+        """A printable path, with any folder name that is itself a secret hidden."""
+        shown = "~" + path[len(self.home):] if path.startswith(self.home + os.sep) else path
+        return "/".join("<hidden>" if detect(part) else safe(part) for part in shown.split("/"))
 
     def record(self, findings, exposure, location, repo=None):
         for where, kind, value, conf in findings:
@@ -319,14 +355,18 @@ class Audit:
                 entry["repos"].add(repo)
 
     def history_exposure(self, repo, commit):
-        if (repo, commit) not in self.pushed_cache:
-            code, out = git(repo, "for-each-ref", "--count=1", f"--contains={commit}", "refs/remotes")
-            self.pushed_cache[(repo, commit)] = "unknown" if code != 0 else "pushed" if out.strip() else "committed"
-        return self.pushed_cache[(repo, commit)]
+        """Commits on a remote branch now, or on one before a force push (the remote branches' reflogs)."""
+        if repo not in self.remote_cache:
+            code, tips = git(repo, "log", "-g", "--format=%H", "--remotes", timeout=120)
+            code, out = git(repo, "rev-list", "--remotes", "--stdin", stdin=tips, timeout=120) if code == 0 else (code, b"")
+            self.remote_cache[repo] = set(out.decode("ascii", "replace").split()) if code == 0 else None
+        remote = self.remote_cache[repo]
+        return "unknown" if remote is None else "pushed" if commit in remote else "committed"
 
     def scan_history(self, repo, rid):
-        code, out = git(repo, "log", "--all", "--reflog", "--full-history", "--no-renames", "-z", "--format=%H", "--name-only",
-                        "--diff-filter=AM", f"--max-count={MAX_COMMITS}", "--", *HISTORY_PATHS, timeout=180)
+        paths = HISTORY_PATHS + (SETTINGS_NAMES if os.path.basename(repo) == ".claude" else ())
+        code, out = git(repo, "log", "--all", "--reflog", "--full-history", "--no-renames", "--diff-merges=first-parent", "-z", "--format=%H", "--name-only",
+                        "--diff-filter=d", f"--max-count={MAX_COMMITS}", "--", *paths, timeout=180)
         if code != 0:
             self.incomplete.add(rid)
             return
@@ -353,6 +393,7 @@ class Audit:
             return
         document = parse(blob)
         if document is None:
+            self.incomplete.add(rid)
             return
         try:
             findings = scan_document(document)
@@ -361,10 +402,10 @@ class Audit:
             return
         if findings:
             exposure = self.history_exposure(repo, commit)
-            self.record(findings, exposure, {"state": "history", "repo": self.show(repo), "commit": commit[:10], "file": safe(path), "pushed": exposure == "pushed"}, repo)
+            self.record(findings, exposure, {"state": "history", "repo": self.show(repo), "commit": commit[:10], "file": self.show(path), "pushed": exposure == "pushed", "_repo": rid}, repo)
 
     def run(self, check_github):
-        settings, repos, unreadable_dirs = discover(self.root)
+        settings, repos, unreadable_dirs, links = discover(self.root)
         unreadable = []
         for path in settings:
             document = read_settings(path)
@@ -390,27 +431,36 @@ class Audit:
             elif rid not in seen:
                 seen.add(rid)
                 self.scan_history(repo, rid)
-        return self.report(settings, seen, unreadable, unreadable_dirs, check_github)
+        return self.report(settings, seen, unreadable, unreadable_dirs, [self.show(link) for link in links], check_github)
 
-    def report(self, settings, seen, unreadable, unreadable_dirs, check_github):
+    def hide_found_values(self, text):
+        """A folder containing a long found value is hidden whole, so short values can't be located by elimination."""
+        long_values = [value for value in self.by_value if len(value) >= 12]
+        return "/".join("<hidden>" if any(value in part for value in long_values) else part for part in text.split("/"))
+
+    def report(self, settings, seen, unreadable, unreadable_dirs, links, check_github):
         for secret in self.by_value.values():
             for location in secret["locations"]:
-                failed = location.pop("_failed", False)
-                if (failed or location.pop("_repo", None) in self.incomplete) and EXPOSURE_RANK[secret["exposure"]] > EXPOSURE_RANK["unknown"]:
+                failed, repo = location.pop("_failed", False), location.pop("_repo", None)
+                if (failed or repo in self.incomplete) and EXPOSURE_RANK[secret["exposure"]] > EXPOSURE_RANK["unknown"]:
                     secret["exposure"] = "unknown"
-                location.pop("_repo", None)
+                for field in ("file", "repo"):
+                    if field in location:
+                        location[field] = self.hide_found_values(location[field])
         secrets = sorted(self.by_value.values(), key=lambda s: (EXPOSURE_RANK[s["exposure"]], CONFIDENCE_RANK[s["confidence"]], s["kind"]))
         visibility = {}
         for number, secret in enumerate(secrets, 1):
             secret["id"] = f"secret-{number}"
             pushed_repos = secret.pop("repos")
             if check_github and pushed_repos:
-                found = {visibility.setdefault(r, github_visibility(r)) for r in pushed_repos}
+                for repo in pushed_repos - visibility.keys():
+                    visibility[repo] = github_visibility(repo)
+                found = {visibility[repo] for repo in pushed_repos}
                 secret["visibility"] = "public" if "public" in found else "unknown" if "unknown" in found else "private"
             secret["action"] = action_for(secret)
         return {
             "scanned": {"root": self.show(self.root), "settings_files": len(settings), "repos": len(seen), "unreadable": len(unreadable),
-                        "unreadable_files": unreadable, "unreadable_folders": unreadable_dirs, "incomplete_repos": len(self.incomplete)},
+                        "unreadable_files": unreadable, "unreadable_folders": unreadable_dirs, "incomplete_repos": len(self.incomplete), "skipped_links": links},
             "secrets": secrets,
             "limits": LIMITS,
         }
@@ -422,6 +472,9 @@ def render(report):
     if scanned["unreadable_files"]:
         lines.append("These settings files could not be parsed and were skipped:")
         lines += [f"  {path}" for path in scanned["unreadable_files"]]
+    if scanned["skipped_links"]:
+        lines.append("These are symbolic links and were not followed. Scan the folder they point to as well:")
+        lines += [f"  {path}" for path in scanned["skipped_links"]]
     if scanned["unreadable_folders"]:
         lines.append(f"{scanned['unreadable_folders']} folders could not be read. macOS may need folder access for this terminal.")
     if scanned["incomplete_repos"]:
@@ -440,13 +493,6 @@ def render(report):
     return "\n".join(lines)
 
 
-def scrub(output, values):
-    """Last line of defence: a value that also appears in a path never reaches the output."""
-    for value in sorted(values, key=len, reverse=True):
-        output = output.replace(value, "<hidden>").replace(json.dumps(value)[1:-1], "<hidden>")
-    return output
-
-
 def main():
     parser = argparse.ArgumentParser(description="Find secrets saved in Claude Code settings files. Never prints a value.")
     parser.add_argument("root", nargs="?", default="~", help="folder to scan (default: your home folder)")
@@ -456,9 +502,11 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         root = os.path.realpath(os.path.expanduser(args.root))
-        audit = Audit(root, os.path.realpath(os.path.expanduser("~")))
-        report = audit.run(args.github)
-        print(scrub(json.dumps(report, indent=1) if args.json else render(report), audit.by_value))
+        if not os.path.isdir(root):
+            print("audit failed: that folder doesn't exist", file=sys.stderr)
+            return 2
+        report = Audit(root, os.path.realpath(os.path.expanduser("~"))).run(args.github)
+        print(json.dumps(report, indent=1) if args.json else render(report))
     except Exception as error:  # Never let a traceback carry file contents into the output.
         print(f"audit failed: {type(error).__name__}", file=sys.stderr)
         return 2
