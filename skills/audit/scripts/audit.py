@@ -440,7 +440,7 @@ class Audit:
         for repo in repos:
             rid = repo_id(repo)
             if rid is None:
-                self.incomplete.setdefault(repo, "git couldn't open it")
+                self.incomplete.setdefault(repo, "git couldn't open it, which often means a leftover worktree")
             elif rid not in seen:
                 seen.add(rid)
                 self.checkouts[rid] = repo
@@ -555,7 +555,7 @@ def render(report, color=False):
     if scanned["skipped_links"]:
         notes += ["  Symbolic links, not followed. Scan the folder they point to as well:"] + [f"    {path}" for path in scanned["skipped_links"]]
     if scanned["unreadable_folders"]:
-        notes.append(f"  {scanned['unreadable_folders']} folders couldn't be read. This terminal may need permission to open them.")
+        notes.append(f"  {scanned['unreadable_folders']} folders couldn't be read, usually because of their permissions.")
     if scanned["incomplete_details"]:
         notes += ["  Repos only partly checked. Anything found in them is listed above as possibly pushed:"]
         notes += table([[item["repo"], item["reason"]] for item in scanned["incomplete_details"]])
