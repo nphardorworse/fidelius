@@ -1,2 +1,5 @@
 evals/results/
 .DS_Store
+# The audit lives on main. The directory version ships no scripts or tests.
+skills/audit/
+tests/
