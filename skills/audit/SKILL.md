@@ -31,11 +31,11 @@ Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings
 
 3. If anything was pushed, say first that the key must be changed at its provider before any cleanup, because removing it from the latest commit leaves it in history, forks and clones. Never suggest saving a pushed value anywhere.
 
-4. Offer the cleanup for repos where the file is tracked, and run it only if the user agrees:
+4. Offer the cleanup for repos where the file is tracked, and run it from the repo root only if the user agrees. Show `git status` before committing anything:
 
    ```
    git rm --cached .claude/settings.local.json
-   echo '.claude/settings.local.json' >> .gitignore
+   printf '\n**/.claude/settings.local.json\n' >> .gitignore
    ```
 
 5. For rules that need deleting, give the file and the location from the report (for example `permissions.allow[3]`) and ask the user to remove them in their own editor or with `/permissions`. You can't do this step, since you may not read the file.
