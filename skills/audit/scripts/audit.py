@@ -463,7 +463,8 @@ class Audit:
         details = [{"repo": self.hide_found_values(self.show(self.checkouts.get(key, key))), "reason": reason} for key, reason in sorted(self.incomplete.items())]
         return {
             "scanned": {"root": self.show(self.root), "settings_files": len(settings), "repos": len(seen), "unreadable": len(unreadable),
-                        "unreadable_files": unreadable, "unreadable_folders": unreadable_dirs, "incomplete_repos": len(self.incomplete), "incomplete_details": details, "skipped_links": links},
+                        "unreadable_files": [self.hide_found_values(path) for path in unreadable], "unreadable_folders": unreadable_dirs, "incomplete_repos": len(self.incomplete),
+                        "incomplete_details": details, "skipped_links": [self.hide_found_values(path) for path in links]},
             "secrets": secrets,
             "limits": LIMITS,
         }
