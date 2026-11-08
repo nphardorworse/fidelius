@@ -560,6 +560,19 @@ class EndToEnd(unittest.TestCase):
         self.settings(repo, [GH])
         self.assertEqual(self.secret(self.run_audit())["exposure"], "unknown")
 
+    def test_partly_checked_repo_is_named_with_a_reason(self):
+        repo = self.repo("conflicted-repo")
+        path = self.settings(repo, [])
+        path.write_text("<<<<<<< HEAD\n{}\n")
+        self.git(repo, "add", "-f", str(path))
+        self.git(repo, "commit", "-qm", "conflict")
+        report = self.run_audit()
+        detail = report["scanned"]["incomplete_details"][0]
+        self.assertTrue(detail["repo"].endswith("conflicted-repo"), detail)
+        self.assertIn("couldn't be parsed", detail["reason"])
+        text = subprocess.run([sys.executable, str(SCRIPT), str(self.home)], env=self.env, capture_output=True, text=True, timeout=120).stdout
+        self.assertIn("conflicted-repo", text)
+
     def test_home_config_folder_that_is_a_repo(self):
         repo = self.home / ".claude"
         repo.mkdir()
