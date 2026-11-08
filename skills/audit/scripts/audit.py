@@ -502,7 +502,7 @@ def headline(secrets):
     count = f"{len(secrets)} likely secret{'s' if len(secrets) != 1 else ''} in {len(places)} {'file' if len(places) == 1 else 'places'}."
     if urgent:
         return f"{count} {urgent} to rotate."
-    return f"{count} Nothing on a remote branch." if any(s["exposure"] == "committed" for s in secrets) else f"{count} Nothing to rotate."
+    return f"{count} None confirmed on a remote branch." if any(s["exposure"] == "committed" for s in secrets) else f"{count} Nothing to rotate."
 
 
 def table(rows):

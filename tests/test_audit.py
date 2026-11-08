@@ -691,7 +691,7 @@ class EndToEnd(unittest.TestCase):
         self.git(repo, "commit", "-qm", "oops")
         out = self.text_report()
         self.assertNotIn("Nothing to rotate", out)
-        self.assertIn("Nothing on a remote branch", out)
+        self.assertIn("None confirmed on a remote branch", out)
 
     def test_home_config_folder_that_is_a_repo(self):
         repo = self.home / ".claude"
