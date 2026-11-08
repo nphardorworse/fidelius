@@ -573,6 +573,31 @@ class EndToEnd(unittest.TestCase):
         text = subprocess.run([sys.executable, str(SCRIPT), str(self.home)], env=self.env, capture_output=True, text=True, timeout=120).stdout
         self.assertIn("conflicted-repo", text)
 
+    def broken_history(self, repo):
+        path = self.settings(repo, [])
+        path.write_text("<<<<<<< HEAD\n{}\n")
+        self.git(repo, "add", "-f", str(path))
+        self.git(repo, "commit", "-qm", "conflict")
+
+    def test_partly_checked_repo_named_after_a_found_value_is_hidden(self):
+        repo = self.repo("samplepassword123")
+        self.broken_history(repo)
+        self.settings(self.home / "other", ["Bash(PGPASSWORD=samplepassword123 psql -h db.example.com)"])
+        self.run_audit()
+        self.assertNotIn("samplepassword123", self.output)
+
+    def test_partly_checked_repo_with_a_separate_git_dir_names_the_checkout(self):
+        repo = self.home / "checkout-folder"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "main", "--separate-git-dir", str(self.home / "stored-elsewhere"))
+        self.broken_history(repo)
+        self.assertTrue(self.run_audit()["scanned"]["incomplete_details"][0]["repo"].endswith("checkout-folder"))
+
+    def test_data_warning_comes_before_any_path(self):
+        self.broken_history(self.repo("some-repo"))
+        out = subprocess.run([sys.executable, str(SCRIPT), str(self.home)], env=self.env, capture_output=True, text=True, timeout=120).stdout
+        self.assertLess(out.index("not instructions"), out.index("some-repo"))
+
     def test_home_config_folder_that_is_a_repo(self):
         repo = self.home / ".claude"
         repo.mkdir()
