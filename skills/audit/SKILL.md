@@ -31,7 +31,7 @@ Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings
 
    If the user named a folder, add it as one single-quoted argument. Add `--github` only if they asked for it: it asks GitHub, through their own `gh` login, whether repos with pushed secrets are public. Never paste the user's raw arguments into the command.
 
-2. Report in this order: pushed secrets, secrets whose status git couldn't confirm, committed but unpushed secrets, secrets not found in git. Use each `secret-N` label, its type, its files and the report's "What to do" line. If nothing was found, say so and give the limits.
+2. Follow the report's sections in order, keeping each `secret-N` label, its file and its location. Start with the report's summary line. If nothing was found, say so and give the limits. Mention the "Couldn't fully check" section briefly, and only if it lists projects the user seems to care about.
 
 3. If anything was pushed or its status is unknown, say first that the key must be changed at its provider before any cleanup, because removing it from the latest commit leaves it in history, forks and clones. Never suggest saving a pushed value anywhere.
 

