@@ -26,7 +26,7 @@ The app itself isn't open source. This repo is for:
 
 ## What the plugin does
 
-Its only active part is one Markdown skill, [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md). It has no hooks, MCP servers or scripts, and it sends nothing by itself. It tells Claude to run `accio`, which the Fidelius app installs (the plugin doesn't include it):
+Its main part is one Markdown skill, [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md). That skill has no hooks, MCP servers or scripts, and it sends nothing by itself. It tells Claude to run `accio`, which the Fidelius app installs (the plugin doesn't include it):
 
 - `accio list` and `accio list <project> --json` show project and variable names, never values.
 - `accio <project> <command>` runs a command with that project's keys as environment variables.
@@ -43,7 +43,7 @@ Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings
 /fidelius:audit
 ```
 
-It scans the settings files in your home folder and their git history, and reports which keys were pushed, which were only committed and which never left your Mac. It needs Python 3 and git, and it doesn't need the Fidelius app. A local script does the scanning, and its report never contains a value, so the keys stay out of your Claude conversation. It finds passwords typed inside commands as well as known key formats. It only sees this Mac and its local clones, so a clean result doesn't prove a key never leaked.
+It scans the settings files in your home folder and their git history, and reports which keys are on a remote branch, which were only committed and which weren't found in git. It needs Python 3 and git, and it doesn't need the Fidelius app. A local script does the scanning, and its report never contains a value, so the keys stay out of your Claude conversation. It finds passwords typed inside commands as well as known key formats. It only sees this Mac and its local clones, so a clean result doesn't prove a key never leaked.
 
 Add `--github` to check whether pushed repos are public, through your own `gh` login. You can also run the script directly: `skills/audit/scripts/audit.py`.
 
