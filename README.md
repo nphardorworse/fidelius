@@ -37,7 +37,7 @@ A command run through `accio` gets your keys, and it may send them to the servic
 
 ## Check for keys Claude Code has saved
 
-Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it. After installing the plugin, run:
+Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it. After [installing the plugin](#what-this-repo-is), run:
 
 ```
 /fidelius:audit
