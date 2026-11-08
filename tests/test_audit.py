@@ -661,6 +661,38 @@ class EndToEnd(unittest.TestCase):
         report = self.run_audit()
         self.assertIn("\033[", audit.render(report, color=True))
 
+    def test_env_name_equal_to_a_found_value_is_hidden(self):
+        self.settings(self.home / "app", [], env={"PASSWORD_123456789": "PASSWORD_123456789"})
+        self.run_audit()
+        self.assertNotIn("PASSWORD_123456789", self.output)
+        self.assertNotIn("PASSWORD_123456789", self.text_report())
+
+    def test_program_label_equal_to_a_found_value_is_dropped(self):
+        self.settings(self.home / "app", ["Bash(PGPASSWORD=zq7-plover-harbor zq7-plover-harbor)"])
+        self.assertNotIn("zq7-plover-harbor", self.text_report())
+
+    def test_only_folders_ending_in_cache_are_skipped(self):
+        self.settings(self.home / ".cache-client", [GH])
+        self.secret(self.run_audit())
+
+    def test_tracked_shared_settings_gets_no_git_rm(self):
+        repo = self.repo("team")
+        path = self.settings(repo, [GH], name="settings.json")
+        self.git(repo, "add", str(path))
+        self.git(repo, "commit", "-qm", "shared")
+        out = self.text_report()
+        self.assertNotIn("git rm", out)
+        self.assertIn("delete the rule and commit", out.lower())
+
+    def test_committed_secret_does_not_say_nothing_to_rotate(self):
+        repo = self.repo("kept")
+        path = self.settings(repo, [GH])
+        self.git(repo, "add", "-f", str(path))
+        self.git(repo, "commit", "-qm", "oops")
+        out = self.text_report()
+        self.assertNotIn("Nothing to rotate", out)
+        self.assertIn("Nothing on a remote branch", out)
+
     def test_home_config_folder_that_is_a_repo(self):
         repo = self.home / ".claude"
         repo.mkdir()

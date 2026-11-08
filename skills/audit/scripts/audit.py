@@ -233,7 +233,7 @@ def discover(root):
             links.append(os.path.join(dirpath, ".claude"))
         if dirpath == root and "Library" in dirnames:
             dirnames.remove("Library")
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not (d.startswith(".") and "cache" in d.lower())]
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not (d.startswith(".") and d.lower().endswith("cache"))]
         if ".git" in dirnames or ".git" in filenames:
             repos.append(dirpath)
             if ".git" in dirnames:
@@ -461,6 +461,9 @@ class Audit:
                 for field in ("file", "repo"):
                     if field in location:
                         location[field] = self.hide_found_values(location[field])
+                location["where"] = ".".join(part if re.sub(r"\[\d+\]", "", part) in KNOWN_KEYS or not any(v in part for v in self.by_value) else "entry" for part in location["where"].split("."))
+                if any(value in location["program"] for value in self.by_value):
+                    location["program"] = ""
         secrets = sorted(self.by_value.values(), key=lambda s: (EXPOSURE_RANK[s["exposure"]], CONFIDENCE_RANK[s["confidence"]], s["kind"]))
         visibility = {}
         for number, secret in enumerate(secrets, 1):
@@ -497,7 +500,9 @@ def headline(secrets):
     places = {loc.get("file") if loc["state"] == "current" else loc["repo"] for s in secrets for loc in s["locations"]}
     urgent = sum(s["exposure"] in ("pushed", "unknown") for s in secrets)
     count = f"{len(secrets)} likely secret{'s' if len(secrets) != 1 else ''} in {len(places)} {'file' if len(places) == 1 else 'places'}."
-    return f"{count} {urgent} to rotate." if urgent else f"{count} Nothing to rotate."
+    if urgent:
+        return f"{count} {urgent} to rotate."
+    return f"{count} Nothing on a remote branch." if any(s["exposure"] == "committed" for s in secrets) else f"{count} Nothing to rotate."
 
 
 def table(rows):
@@ -511,7 +516,9 @@ def location_row(secret, loc):
     return [secret["id"], where, kind] if loc["state"] == "current" else [secret["id"], f"commit {loc['commit']}", f"{loc['file']} {where}", kind]
 
 
-def git_fix(state):
+def git_fix(path, state):
+    if not path.endswith("settings.local.json"):
+        return ["This is the shared settings file, so it's meant to be committed. Delete the rule and commit that change."] if state == "tracked" else []
     if state == "tracked":
         return ["Git tracks this file. From the folder that holds .claude, once any keys are rotated:", "git rm --cached -- .claude/settings.local.json", IGNORE_FIX]
     if state == "not ignored":
@@ -539,7 +546,7 @@ def render(report, color=False):
                 groups.setdefault(key, []).append((secret, loc))
         for header, entries in sorted(groups.items()):
             lines += ["", f"  {paint(header, '1')}"] + table([location_row(s, loc) for s, loc in entries])
-            fix = git_fix(entries[0][1].get("git"))
+            fix = git_fix(header, entries[0][1].get("git"))
             if fix:
                 lines += [f"    {fix[0]}"] + [f"      {paint(command, '2')}" for command in fix[1:]]
     notes = []
