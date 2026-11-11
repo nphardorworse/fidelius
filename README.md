@@ -22,7 +22,7 @@ Or download it from the website. Then open Fidelius and choose Setup > Install a
 The app itself isn't open source. This repo is for:
 
 - **Issues.** Bug reports and feature requests for the app and `accio`.
-- **The agent skill.** [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md) tells an agent how to use your keys through `accio`. Fidelius can write the same rules into Claude Code's, Codex's and Gemini CLI's global instructions for you (Setup > Add to My Agents Automatically…). The skill is for agents Fidelius doesn't set up, or if you'd rather not have your instructions file edited: `npx skills@1.7.1 add nphardorworse/fidelius`, or in Claude Code as a plugin with `/plugin marketplace add nphardorworse/fidelius`, then `/plugin install fidelius@fidelius`. A skill only loads when the task looks related, while the rules in CLAUDE.md apply in every session, so the instructions file is the stronger setup.
+- **The agent skill.** [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md) tells an agent how to use your keys through `accio`. Fidelius can write the same rules into Claude Code's, Codex's and Gemini CLI's global instructions for you (Setup > Add to My Agents Automatically…). The skill is for agents Fidelius doesn't set up, or if you'd rather not have your instructions file edited: `npx skills@1.8.1 add nphardorworse/fidelius --skill fidelius`, or in Claude Code as a plugin with `/plugin marketplace add nphardorworse/fidelius`, then `/plugin install fidelius@fidelius`. A skill only loads when the task looks related, while the rules in CLAUDE.md apply in every session, so the instructions file is the stronger setup.
 
 ## What the plugin does
 
@@ -42,6 +42,8 @@ Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings
 ```
 /fidelius:audit
 ```
+
+Without the plugin, install it as a standalone skill with `npx skills@1.8.1 add nphardorworse/fidelius --skill audit -a claude-code` and run `/audit`.
 
 It scans the settings files in your home folder and their git history, and reports which keys are on a remote branch, which were only committed and which weren't found in git. It runs on macOS and Linux, needs Python 3 and git, and doesn't need the Fidelius app. Windows isn't supported. A local script does the scanning, and its report doesn't include the keys it finds, so they stay out of your Claude conversation. It finds passwords typed inside commands as well as known key formats. It only sees this computer and its local clones, so a clean result doesn't prove a key never leaked.
 
