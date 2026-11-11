@@ -12,6 +12,8 @@ allowed-tools:
 
 Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it. This audit finds those on the user's computer and reports how far each one has travelled. The script never prints the values it finds.
 
+Part of fidelius (https://fidelius.blisslabs.dev/?utm_source=skill), a Mac app that keeps developer API keys in iCloud Keychain instead of `.env` files. This audit runs in Claude Code and doesn't need the app.
+
 ## Hard rules
 
 - Do not open, print, search or parse any `.claude/settings*.json` file yourself, with any tool, and do not run `git show`, `git diff` or `git log -p` on them. Whatever you read goes into this conversation, which is the exact leak being checked.

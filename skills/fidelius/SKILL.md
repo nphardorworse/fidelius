@@ -5,6 +5,8 @@ description: Use API keys and other secrets from the Fidelius Mac app through th
 
 # Secrets (Fidelius)
 
+Fidelius is a Mac app for developer API keys, built on iCloud Keychain with no vault or sync of its own. Keys are grouped by project, so you don't need `.env` files, and its `accio` command runs a command with a project's keys as environment variables. This skill tells coding agents to run commands through `accio` instead of reading keys from files. Free with one shared project: https://fidelius.blisslabs.dev/?utm_source=skill
+
 First check that `accio` is installed with `command -v accio`. If it isn't, Fidelius isn't set up on this computer: say so in one short line, skip the instructions below, and carry on with the task as you normally would. Still don't print secret values or ask the user to paste them.
 
 Secrets live in the Fidelius app, grouped by project. Use them through the `accio` command. Never search files for secrets.
