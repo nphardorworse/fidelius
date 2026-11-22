@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for skills/audit/scripts/audit.py. Every secret here is fake and built at runtime."""
 import base64
+import importlib.util
 import json
 import os
 import subprocess
@@ -19,6 +20,8 @@ GH = "ghp" + "_" + "a1B2c3D4" * 5
 AWS = "AKIA" + "ABCDEFGH12345678"
 ANTHROPIC = "sk-" + "ant-" + "api03-" + "x9Y8z7W6" * 4
 PW = "zq7-Plover-Harbor"
+OPAQUE = "Qm9vYXJk" + "bGFudGVybjk5"
+HAS_TOMLLIB = importlib.util.find_spec("tomllib") is not None
 
 
 def jwt(role):
@@ -147,6 +150,77 @@ class Detect(unittest.TestCase):
         self.assertEqual(audit.detect(jwt("anon")), [])
         self.assertEqual(kinds(jwt("service_role")), ["Supabase service-role key"])
 
+    def test_more_header_url_and_flag_shapes(self):
+        for text in (
+            f'Bash(curl -H "Authorization: {OPAQUE}" https://a.example.com)',
+            f'Bash(curl -H "Authorization: ApiKey {OPAQUE}" https://a.example.com)',
+            f'Bash(curl -H "Authorization: Key {OPAQUE}" https://a.example.com)',
+            f'Bash(curl -H "Proxy-Authorization: Basic {OPAQUE}" https://a.example.com)',
+            f'Bash(curl -H "X-Auth-Key: {OPAQUE}" https://a.example.com)',
+            f'Bash(curl -H "Ocp-Apim-Subscription-Key: {OPAQUE}" https://a.example.com)',
+            f'Bash(curl -H "Cookie: {OPAQUE}" https://a.example.com)',
+            f"https://mcp.example.com/mcp?apiKey={OPAQUE}",
+            f"https://mcp.example.com/mcp/?tavilyApiKey={OPAQUE}",
+            f"https://mcp.example.com/mcp?exaApiKey={OPAQUE}",
+            f"https://mcp.example.com/mcp?accessToken={OPAQUE}",
+            f"https://mcp.example.com/mcp?a=1&api_token={OPAQUE}",
+            f"https://mcp.example.com/mcp?private_token={OPAQUE}",
+            f" npx @smithery/cli run x --key {OPAQUE}",
+            f" npx figma-developer-mcp --figma-api-key={OPAQUE} --stdio",
+            f" srv --github-token {OPAQUE}",
+            f" srv --api-token {OPAQUE}",
+            f" srv --apiKey {OPAQUE}",
+            f" srv --api_key {OPAQUE}",
+            f" srv --secret-key {OPAQUE}",
+        ):
+            self.assertFound(text, OPAQUE)
+
+    def test_url_value_stops_at_a_bracket(self):
+        self.assertEqual([v for _, v, _ in audit.detect(f"Bash(curl https://x.example.com/v1?api_key={OPAQUE})")], [OPAQUE])
+
+    def test_placeholders_and_plain_words_are_not_secrets(self):
+        for text in (
+            " srv --api-key API_KEY",
+            " srv --pass through",
+            "https://docs.example.com/mcp?key=architecture-notes",
+            "https://jira.example.com/browse?key=PROJ-123",
+            "https://files.example.com/get?key=uploads/logo2.png",
+            "ghp_" + "x" * 36,
+            'Bash(curl -H "Authorization: Bearer {{TOKEN}}" https://a.example.com)',
+            'Bash(curl -H "Authorization: Bearer" https://a.example.com)',
+            " srv --token abc{{name}}def",
+            " srv --token --stdio",
+        ):
+            self.assertEqual(audit.detect(text), [], text)
+
+    def test_values_that_start_with_a_dash_or_hide_in_a_default(self):
+        self.assertFound(f"Bash(PGPASSWORD=-{PW} psql -h db.example.com)", "-" + PW)
+        self.assertFound(f'Bash(curl -H "Authorization: Bearer -{PW}" https://a.example.com)', "-" + PW)
+        self.assertFound("Bash(PGPASSWORD=${DB_PW:-" + PW + "} psql -h db.example.com)", PW)
+
+    def test_env_names_that_hold_keys(self):
+        for name in ("DD_APP_KEY", "DEEPL_AUTH_KEY", "AZURE_DEVOPS_PAT", "OPENROUTER_KEY", "SERVICE_CREDENTIALS", "SMITHERY_KEY", "api_key"):
+            self.assertEqual([v for _, v, _ in audit.named_value(name, PW, "x")], [PW], name)
+        self.assertEqual(audit.named_value("AUTH_HEADER", f"Bearer {PW}", "x")[0][1], PW)
+        self.assertEqual(audit.named_value("MY_API_KEY", "-" + PW, "x")[0][1], "-" + PW)
+        self.assertEqual(audit.named_value("MY_API_KEY", "${MY_API_KEY:-" + PW + "}", "x")[0][1], PW)
+        self.assertEqual(audit.named_value("NEXT_PUBLIC_API_KEY", PW, "x"), [])
+
+    def test_env_placeholders(self):
+        for value in ("sk-...", "sk-xxx", "REPLACE_ME", "replace-with-your-key", "YOUR API KEY", "TODO", "op://Private/GitHub/token",
+                      "%GITHUB_TOKEN%", "${input:github_token}", "${env:GITHUB_TOKEN}", "$GITHUB_TOKEN", "Bearer $TOKEN", "Bearer {{TOKEN}}",
+                      "Bearer ${TOKEN}", "/Users/me/.config/creds.json", "ghp_" + "x" * 36):
+            self.assertEqual(audit.named_value("OPENAI_API_KEY", value, "x"), [], value)
+
+    def test_trailing_comma_far_from_its_bracket(self):
+        self.assertEqual(audit.parse(b'{"a": 1,' + b" " * 300 + b"}"), {"a": 1})
+
+    def test_byte_order_mark(self):
+        self.assertEqual(audit.parse(b'\xef\xbb\xbf{"a": 1}'), {"a": 1})
+        if HAS_TOMLLIB:
+            findings, _, problem = audit.check_config("config.toml", b'\xef\xbb\xbf[mcp_servers.x]\nenv = { API_KEY = "' + PW.encode() + b'" }\n')
+            self.assertEqual((len(findings), problem), (1, None))
+
 
 class EndToEnd(unittest.TestCase):
     def setUp(self):
@@ -160,6 +234,7 @@ class EndToEnd(unittest.TestCase):
             XDG_CONFIG_HOME=str(self.xdg),
             GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
             GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
+            HOME=str(self.home),
         )
         self.env.pop("CLAUDE_CONFIG_DIR", None)  # Otherwise the real config folder's settings join every scan.
 
@@ -788,6 +863,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(len(report["secrets"]), 1)
         self.assertIn("claude_desktop_config.json", report["secrets"][0]["locations"][0]["file"])
 
+    @unittest.skipUnless(HAS_TOMLLIB, "needs Python 3.11 or later")
     def test_codex_config_toml(self):
         self.write(".codex/config.toml", f'model = "gpt"\n\n[mcp_servers.linear]\ncommand = "npx"\nenv = {{ LINEAR_API_KEY = "{PW}" }}\n')
         report = self.run_audit()
@@ -821,6 +897,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(wheres, ["mcpServers.entry-1.headers.Authorization", "mcpServers.entry-1.headers.X-Custom-Token"])
         self.assertNotIn(PW, self.output)
 
+    @unittest.skipUnless(HAS_TOMLLIB, "needs Python 3.11 or later")
     def test_codex_http_headers(self):
         self.write(".codex/config.toml", f'[mcp_servers.remote]\nurl = "https://mcp.example.com/mcp"\nhttp_headers = {{ "X-Api-Key" = "{PW}" }}\n')
         self.assertEqual(len(self.run_audit()["secrets"]), 1)
@@ -858,6 +935,7 @@ class EndToEnd(unittest.TestCase):
         self.write("app/.mcp.json", self.server(AUTH_TOKEN="Bearer ${TOKEN}"))
         self.assertEqual(self.run_audit()["secrets"], [])
 
+    @unittest.skipUnless(HAS_TOMLLIB, "needs Python 3.11 or later")
     def test_tracked_fixed_config_is_checked_in_git(self):
         repo = self.home / ".codex"
         self.write(".codex/config.toml", f'[mcp_servers.x]\ncommand = "npx"\nenv = {{ LINEAR_API_KEY = "{PW}" }}\n')
@@ -882,6 +960,7 @@ class EndToEnd(unittest.TestCase):
         self.write("Library/Application Support/Code/User/mcp.json", {"servers": {"x": {"command": "npx", "env": {"BRAVE_API_KEY": PW}}}})
         self.assertEqual(len(self.run_audit()["secrets"]), 1)
 
+    @unittest.skipUnless(HAS_TOMLLIB, "needs Python 3.11 or later")
     def test_project_codex_config(self):
         self.write("app/.codex/config.toml", f'[mcp_servers.x]\ncommand = "npx"\nenv = {{ LINEAR_API_KEY = "{PW}" }}\n')
         self.assertEqual(len(self.run_audit()["secrets"]), 1)
@@ -891,6 +970,164 @@ class EndToEnd(unittest.TestCase):
         self.write(f"{PW}/.mcp.json", self.server(GITHUB_TOKEN=PW))
         result = subprocess.run([sys.executable, str(SCRIPT), str(root), "--json"], env=self.env, capture_output=True, text=True, timeout=120)
         self.assertNotIn(PW, result.stdout + result.stderr)
+
+    def test_same_value_twice_in_one_file_keeps_both_places(self):
+        self.settings(self.home / "app", [f"Bash(PGPASSWORD={PW} psql -h db.example.com *)", "Bash(ls)", f"Bash(PGPASSWORD={PW} pg_dump -h db.example.com *)"])
+        self.write("proj/.mcp.json", {"mcpServers": {"a": {"command": "npx", "env": {"GITHUB_TOKEN": GH}}, "b": {"command": "npx", "env": {"GITHUB_TOKEN": GH}}}})
+        wheres = sorted(where for where, _ in self.found(self.run_audit()))
+        self.assertEqual(wheres, ["mcpServers.entry-1.env.GITHUB_TOKEN", "mcpServers.entry-2.env.GITHUB_TOKEN", "permissions.allow[0]", "permissions.allow[2]"])
+
+    def test_args_item_and_command_line_are_one_place(self):
+        self.write("app/.mcp.json", {"mcpServers": {"r": {"command": "npx", "args": ["mcp-remote", "https://a.example.com/sse", "--header", f"Authorization: Bearer {PW}"]}}})
+        self.assertEqual([where for where, _ in self.found(self.run_audit())], ["mcpServers.entry-1.args[3]"])
+
+    def test_large_claude_json_is_still_checked(self):
+        history = [{"display": "x" * 1000} for _ in range(5200)]
+        self.write(".claude.json", {"projects": {str(self.home / "app"): {"history": history}},
+                                    "mcpServers": {"s": {"command": "npx", "env": {"SENTRY_AUTH_TOKEN": PW}}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+
+    def test_too_large_unreadable_and_broken_files_are_told_apart(self):
+        self.settings(self.home / "big", {"x": "y" * (audit.MAX_FILE_BYTES + 10)})
+        self.write("bad/.mcp.json", "{")
+        locked = self.write("locked/.mcp.json", {})
+        locked.chmod(0)
+        reasons = sorted(item["reason"] for item in self.run_audit()["scanned"]["skipped_files"])
+        self.assertEqual(reasons, ["couldn't be parsed", "couldn't be read", "too large to check"])
+
+    def test_skipped_main_config_is_not_a_clean_result(self):
+        self.write(".claude.json", "{ not json")
+        self.assertTrue(self.run_audit()["scanned"]["skipped_files"][0]["main"])
+        out = self.text_report()
+        self.assertNotIn("No saved secrets found.", out)
+        self.assertIn("main config", out.lower())
+
+    def test_header_blocks_and_oauth_secrets(self):
+        self.write("a/.mcp.json", {"mcpServers": {"r": {"type": "http", "url": "https://mcp.example.com/mcp", "headers": {
+            "Authorization": PW, "Cookie": f"session={PW}c", "Ocp-Apim-Subscription-Key": PW + "s", "Notion-Version": "2022-06-28"}}}})
+        self.write("b/.gemini/settings.json", {"mcpServers": {"r": {"httpUrl": "https://mcp.example.com/mcp", "oauth": {"clientId": "abc", "clientSecret": PW + "o"}}}})
+        wheres = sorted(where for where, _ in self.found(self.run_audit()))
+        self.assertEqual(wheres, ["mcpServers.entry-1.headers.Authorization", "mcpServers.entry-1.headers.Cookie",
+                                  "mcpServers.entry-1.headers.Ocp-Apim-Subscription-Key", "mcpServers.entry-1.oauth.clientSecret"])
+
+    @unittest.skipUnless(HAS_TOMLLIB, "needs Python 3.11 or later")
+    def test_codex_oauth_client_secret(self):
+        self.write(".codex/config.toml", f'[mcp_servers.r]\nurl = "https://mcp.example.com/mcp"\n\n[mcp_servers.r.oauth]\nclient_secret = "{PW}"\n')
+        self.assertEqual(self.found(self.run_audit()), [("mcp_servers.entry-1.oauth.client_secret", "OAuth client secret")])
+
+    def test_url_keys_are_named(self):
+        self.write("w/mcp_config.json", {"mcpServers": {"r": {"serverUrl": f"https://mcp.example.com/mcp?api_key={PW}"}}})
+        self.write("g/.gemini/settings.json", {"mcpServers": {"r": {"httpUrl": f"https://mcp.example.com/mcp?apiKey={PW}2"}}})
+        self.assertEqual(sorted(where for where, _ in self.found(self.run_audit())), ["mcpServers.entry-1.httpUrl", "mcpServers.entry-1.serverUrl"])
+
+    def dotfiles(self, files):
+        dots = self.repo("dotfiles")
+        for relative, value in files.items():
+            path = dots / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self.server(API_KEY=value)))
+            self.git(dots, "add", relative)
+        self.git(dots, "commit", "-qm", "dots")
+        self.push(dots)
+        return dots
+
+    def test_dotfiles_repo_configs_and_their_history(self):
+        files = {"claude/claude_desktop_config.json": GH, "windsurf/mcp_config.json": PW, "cursor/mcp.json": PW + "2"}
+        dots = self.dotfiles(files)
+        report = self.run_audit()
+        self.assertEqual([s["exposure"] for s in report["secrets"]], ["pushed"] * 3)
+        for relative in files:
+            self.git(dots, "rm", "-q", relative)
+        self.git(dots, "commit", "-qm", "remove")
+        self.assertEqual([s["exposure"] for s in self.run_audit()["secrets"]], ["pushed"] * 3)
+
+    def test_linked_main_configs_are_followed(self):
+        dots = self.dotfiles({"claude/claude_desktop_config.json": GH, "cursor/mcp.json": PW})
+        (self.home / "Library" / "Application Support").mkdir(parents=True)
+        (self.home / "Library" / "Application Support" / "Claude").symlink_to(dots / "claude")
+        (self.home / ".cursor").symlink_to(dots / "cursor")
+        report = self.run_audit()
+        self.assertEqual([s["exposure"] for s in report["secrets"]], ["pushed"] * 2)
+        files = sorted(loc["file"] for s in report["secrets"] for loc in s["locations"] if loc["state"] == "current")
+        self.assertEqual(files, ["~/.cursor/mcp.json", "~/Library/Application Support/Claude/claude_desktop_config.json"])
+        self.assertEqual(report["scanned"]["skipped_links"], [])
+
+    def test_linked_config_folder_in_a_project_is_listed(self):
+        (self.home / "elsewhere").mkdir()
+        (self.home / "app").mkdir()
+        (self.home / "app" / ".cursor").symlink_to(self.home / "elsewhere")
+        self.assertEqual(len(self.run_audit()["scanned"]["skipped_links"]), 1)
+
+    def test_linked_config_no_longer_tracked_is_found_in_history(self):
+        dots = self.repo("dotfiles")
+        (dots / "gemini").mkdir()
+        (dots / "gemini" / "settings.json").write_text(json.dumps(self.server(API_KEY=PW)))
+        self.git(dots, "add", "gemini/settings.json")
+        self.git(dots, "commit", "-qm", "dots")
+        self.push(dots)
+        self.git(dots, "rm", "-q", "--cached", "gemini/settings.json")
+        self.git(dots, "commit", "-qm", "untrack")
+        (self.home / ".gemini").symlink_to(dots / "gemini")
+        self.assertEqual(self.secret(self.run_audit())["exposure"], "pushed")
+
+    def test_config_folder_repo_keeps_root_files_in_history(self):
+        repo = self.home / ".gemini"
+        self.write(".gemini/settings.json", self.server(API_KEY=PW))
+        self.git(repo, "init", "-q", "-b", "main")
+        self.git(repo, "add", "settings.json")
+        self.git(repo, "commit", "-qm", "first")
+        self.git(repo, "rm", "-q", "settings.json")
+        self.git(repo, "commit", "-qm", "remove")
+        self.assertEqual(self.secret(self.run_audit())["exposure"], "committed")
+
+    def run_without_tomllib(self):
+        code = "import runpy, sys; sys.modules['tomllib'] = None; sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')"
+        result = subprocess.run([sys.executable, "-c", code, str(SCRIPT), str(self.home), "--json"], env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_toml_in_history_without_tomllib_does_not_flip_other_results(self):
+        repo = self.repo("proj")
+        self.write("proj/.codex/config.toml", '[mcp_servers.x]\ncommand = "npx"\n')
+        self.git(repo, "add", ".codex/config.toml")
+        self.git(repo, "commit", "-qm", "codex")
+        (repo / ".gitignore").write_text(".claude/settings.local.json\n")
+        self.settings(repo, [f"Bash(PGPASSWORD={PW} psql -h db.example.com)"])
+        report = self.run_without_tomllib()
+        self.assertEqual(self.secret(report)["exposure"], "local")
+        self.assertEqual(report["scanned"]["incomplete_details"], [])
+
+    def test_other_config_folders_settings_and_inner_claude_json(self):
+        self.write(".claude-team/settings.json", {"permissions": {"allow": [f"Bash(PGPASSWORD={PW} psql -h db.example.com)"]}, "env": {"MY_TOKEN": PW + "t"}})
+        self.write(".claude/.claude.json", {"mcpServers": {"a": {"command": "x", "env": {"SENTRY_AUTH_TOKEN": PW + "j"}}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 3)
+
+    def test_claude_json_backups_are_checked_once(self):
+        for stamp in (1, 2, 3):
+            self.write(f".claude/backups/.claude.json.backup.{stamp}", {"mcpServers": {"a": {"command": "x", "env": {"SENTRY_AUTH_TOKEN": PW}}},
+                                                                         "history": [ANTHROPIC]})
+        secret = self.secret(self.run_audit())
+        self.assertEqual(len(secret["locations"]), 1)
+        self.assertIn("backups", secret["locations"][0]["file"])
+        self.assertNotIn("Anthropic", self.output)
+
+    def test_password_in_a_project_folder_name_is_not_printed(self):
+        short, slashed = "s3cr3t99", "Zq9vT2/pLk8Hx3/mWn7Rb4Ys6Ua1Vc5"
+        self.write(".claude.json", {"projects": {
+            f"postgres://admin:{short}@db.example.com": {"mcpServers": {"s": {"command": "x", "env": {"API_KEY": PW}}}},
+            f"AWS_SECRET_ACCESS_KEY={slashed}": {"mcpServers": {"s": {"command": "x", "env": {"API_KEY": PW + "2"}}}}}})
+        self.run_audit()
+        for out in (self.output, self.text_report()):
+            for piece in (short, slashed, slashed[:6], slashed[-6:], "pLk8Hx3"):
+                self.assertNotIn(piece, out)
+
+    def test_header_json_inside_env_uses_header_names(self):
+        self.write("app/.mcp.json", self.server(OPENAPI_MCP_HEADERS=json.dumps({"Authorization": f"Bearer {GH}", "X-Custom-Token": PW})))
+        self.assertEqual(len(self.run_audit()["secrets"]), 2)
+
+    def test_arg_with_quotes_inside(self):
+        self.write("app/.mcp.json", {"mcpServers": {"x": {"command": "srv", "args": ["--password", f'a "{PW}" pass']}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
 
     def test_tracked_mcp_json_gets_its_own_hint(self):
         repo = self.repo("proj")
@@ -903,20 +1140,20 @@ class EndToEnd(unittest.TestCase):
 
 
 class OldPython(unittest.TestCase):
-    def test_toml_without_tomllib_is_reported_not_skipped(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "config.toml")
-            Path(path).write_text('[mcp_servers.x]\ncommand = "npx"\n')
-            saved = sys.modules.get("tomllib")
-            sys.modules["tomllib"] = None  # Makes "import tomllib" fail, as on Python 3.9.
-            try:
-                with self.assertRaises(audit.NeedsNewerPython):
-                    audit.read_settings(path)
-            finally:
-                if saved is None:
-                    del sys.modules["tomllib"]
-                else:
-                    sys.modules["tomllib"] = saved
+    def test_toml_without_tomllib_gets_a_line_check(self):
+        text = f'[mcp_servers.x]\ncommand = "npx"\nenv = {{ LINEAR_API_KEY = "{PW}" }}\nhttp_headers = {{ "X-Api-Key" = "{PW}2" }}\n'
+        saved = sys.modules.get("tomllib")
+        sys.modules["tomllib"] = None  # Makes "import tomllib" fail, as on Python 3.9.
+        try:
+            findings, _, problem = audit.check_config("config.toml", text.encode())
+        finally:
+            if saved is None:
+                del sys.modules["tomllib"]
+            else:
+                sys.modules["tomllib"] = saved
+        self.assertEqual(problem, "simple")
+        self.assertEqual(sorted(f[2] for f in findings), [PW, PW + "2"])
+        self.assertEqual(sorted(f[0] for f in findings), ["line 3", "line 4"])
 
 
 if __name__ == "__main__":
