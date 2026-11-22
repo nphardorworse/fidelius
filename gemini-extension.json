@@ -1,0 +1,5 @@
+{
+  "name": "fidelius",
+  "version": "1.2.0",
+  "description": "Teaches Gemini CLI to run commands through accio, so a project's API keys come from the Mac Keychain instead of a .env file. Needs the Fidelius Mac app. Also adds an audit that finds keys saved in agent settings and MCP server configs, and works without the app."
+}
