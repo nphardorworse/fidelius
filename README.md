@@ -38,7 +38,7 @@ A command run through `accio` gets your keys, and it may send them to the servic
 
 ## Check for keys Claude Code has saved
 
-Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it. After [installing the plugin](#what-this-repo-is), run:
+Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it, and MCP server setups often paste a key into a config file. After [installing the plugin](#what-this-repo-is), run:
 
 ```
 /fidelius:audit
@@ -46,7 +46,7 @@ Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings
 
 Without the plugin, install it as a standalone skill with `npx skills@1.8.1 add nphardorworse/fidelius --skill audit -a claude-code` and run `/audit`.
 
-It scans the settings files in your home folder and their git history, and reports which keys are on a remote branch, which were only committed and which weren't found in git. It runs on macOS and Linux, needs Python 3 and git, and doesn't need the Fidelius app. Windows isn't supported. A local script does the scanning, and its report doesn't include the keys it finds, so they stay out of your Claude conversation. It finds passwords typed inside commands as well as known key formats. It only sees this computer and its local clones, so a clean result doesn't prove a key never leaked.
+It scans Claude Code's settings files and MCP server configs in your home folder (`.mcp.json`, the MCP parts of `~/.claude.json`, and the configs of Claude Desktop, Cursor, VS Code, Gemini CLI, Codex and Windsurf) and their git history, and reports which keys are on a remote branch, which were only committed and which weren't found in git. It runs on macOS and Linux, needs Python 3 and git (3.11 or later to check Codex's `config.toml`), and doesn't need the Fidelius app. Windows isn't supported. A local script does the scanning, and its report doesn't include the keys it finds, so they stay out of your Claude conversation. It finds passwords typed inside commands as well as known key formats. It only sees this computer and its local clones, so a clean result doesn't prove a key never leaked.
 
 Add `--github` to check whether pushed repos are public, through your own `gh` login. You can also run the script directly: `skills/audit/scripts/audit.py`.
 

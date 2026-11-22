@@ -161,6 +161,7 @@ class EndToEnd(unittest.TestCase):
             GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
             GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
         )
+        self.env.pop("CLAUDE_CONFIG_DIR", None)  # Otherwise the real config folder's settings join every scan.
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -742,6 +743,89 @@ class EndToEnd(unittest.TestCase):
         report = self.run_audit()
         self.assertEqual(report["secrets"], [])
         self.assertEqual(report["scanned"]["settings_files"], 1)
+
+    def write(self, relative, content):
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content if isinstance(content, str) else json.dumps(content))
+        return path
+
+    def server(self, **env):
+        return {"mcpServers": {"github": {"command": "npx", "args": ["-y", "server-github"], "env": env}}}
+
+    def test_project_mcp_json_env_key(self):
+        self.write("app/.mcp.json", self.server(GITHUB_PERSONAL_ACCESS_TOKEN=GH))
+        report = self.run_audit()
+        self.assertEqual(len(report["secrets"]), 1)
+        location = report["secrets"][0]["locations"][0]
+        self.assertTrue(location["file"].endswith("app/.mcp.json"), location)
+        self.assertEqual(location["where"], "mcpServers.entry-1.env.GITHUB_PERSONAL_ACCESS_TOKEN")
+        self.assertEqual(report["scanned"]["mcp_files"], 1)
+        self.assertNotIn(GH, self.output)
+
+    def test_cursor_vscode_and_gemini_configs(self):
+        self.write("a/.cursor/mcp.json", self.server(BRAVE_API_KEY=PW))
+        self.write("b/.vscode/mcp.json", {"servers": {"x": {"command": "npx", "env": {"LINEAR_API_KEY": PW + "2"}}}})
+        self.write("c/.gemini/settings.json", self.server(STRIPE_SECRET_KEY=PW + "3"))
+        report = self.run_audit()
+        files = sorted("/".join(loc["file"].split("/")[-2:]) for s in report["secrets"] for loc in s["locations"])
+        self.assertEqual(files, [".cursor/mcp.json", ".gemini/settings.json", ".vscode/mcp.json"])
+
+    def test_claude_json_checks_only_mcp_servers(self):
+        self.write(".claude.json", {
+            "history": [{"display": f"here is my key {ANTHROPIC}"}],
+            "mcpServers": {"a": {"command": "x", "env": {"SENTRY_AUTH_TOKEN": PW}}},
+            "projects": {str(self.home / "app"): {"mcpServers": {"b": {"command": "y", "args": ["--api-key", PW + "9"]}}, "lastCost": 1}},
+        })
+        report = self.run_audit()
+        wheres = sorted(loc["where"] for s in report["secrets"] for loc in s["locations"])
+        self.assertEqual(wheres, ["mcpServers.entry-1.env.SENTRY_AUTH_TOKEN", "projects.entry-1.mcpServers.entry-1.args"])
+        self.assertNotIn("Anthropic", self.output)
+
+    def test_claude_desktop_config_under_library(self):
+        self.write("Library/Application Support/Claude/claude_desktop_config.json", self.server(GITHUB_TOKEN=GH))
+        report = self.run_audit()
+        self.assertEqual(len(report["secrets"]), 1)
+        self.assertIn("claude_desktop_config.json", report["secrets"][0]["locations"][0]["file"])
+
+    def test_codex_config_toml(self):
+        self.write(".codex/config.toml", f'model = "gpt"\n\n[mcp_servers.linear]\ncommand = "npx"\nenv = {{ LINEAR_API_KEY = "{PW}" }}\n')
+        report = self.run_audit()
+        self.assertEqual(len(report["secrets"]), 1)
+        self.assertEqual(report["secrets"][0]["locations"][0]["where"], "mcp_servers.entry-1.env.LINEAR_API_KEY")
+
+    def test_server_started_through_accio_is_clean(self):
+        self.write("app/.mcp.json", {"mcpServers": {"github": {"command": "/Users/me/.local/bin/accio", "args": ["app", "--no-mask", "--", "npx", "server-github"]}}})
+        self.assertEqual(self.run_audit()["secrets"], [])
+
+    def test_committed_mcp_json_in_history(self):
+        repo = self.repo("proj")
+        (repo / ".mcp.json").write_text(json.dumps(self.server(GITHUB_PERSONAL_ACCESS_TOKEN=GH)))
+        self.git(repo, "add", ".mcp.json")
+        self.git(repo, "commit", "-qm", "mcp")
+        (repo / ".mcp.json").write_text(json.dumps(self.server()))
+        self.git(repo, "commit", "-qam", "drop key")
+        report = self.run_audit()
+        self.assertEqual(len(report["secrets"]), 1)
+        self.assertEqual(report["secrets"][0]["exposure"], "committed")
+        self.assertEqual(report["secrets"][0]["locations"][0]["state"], "history")
+
+
+class OldPython(unittest.TestCase):
+    def test_toml_without_tomllib_is_reported_not_skipped(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "config.toml")
+            Path(path).write_text('[mcp_servers.x]\ncommand = "npx"\n')
+            saved = sys.modules.get("tomllib")
+            sys.modules["tomllib"] = None  # Makes "import tomllib" fail, as on Python 3.9.
+            try:
+                with self.assertRaises(audit.NeedsNewerPython):
+                    audit.read_settings(path)
+            finally:
+                if saved is None:
+                    del sys.modules["tomllib"]
+                else:
+                    sys.modules["tomllib"] = saved
 
 
 if __name__ == "__main__":
