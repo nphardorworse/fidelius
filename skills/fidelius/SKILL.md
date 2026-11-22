@@ -1,6 +1,6 @@
 ---
 name: fidelius
-description: Use API keys and other secrets from the Fidelius Mac app through the accio command, without reading .env files or printing values. Use when a command needs credentials or environment variables, when a .env file comes up, or when the user mentions Fidelius or accio.
+description: Use API keys and other secrets from the Fidelius Mac app through the accio command, without reading .env files or printing values. Use when a command needs credentials or environment variables, when a .env file comes up, when adding or configuring an MCP server that needs an API key, or when the user mentions Fidelius or accio.
 ---
 
 # Secrets (Fidelius)
@@ -20,6 +20,8 @@ Secrets live in the Fidelius app, grouped by project. Use them through the `acci
 - Move a project's .env into Fidelius: `accio import` in the project's folder (or `accio import <project> <file>`). It opens Fidelius's Import preview and saves nothing until the user clicks Import, so ask them to review it there. Never read the .env yourself. Afterwards, suggest deleting the .env: it still holds the values in plain text.
 - Most tools don't need a .env: run them with `accio <project> <command>`, or put accio in package.json scripts (`"dev": "accio <project> next dev"`).
 - Make a `.env.example` with `accio export --example` in the project's folder. `accio export` (real values) opens Fidelius for the user to approve. Never read or print a .env that holds real values.
+- Start MCP servers that need a key through accio, so the config holds no key. Claude Code: `claude mcp add <name> -- accio <project> --no-mask -- <server command>`. In a JSON or TOML config (`.mcp.json`, Claude Desktop, Cursor, Gemini CLI, Codex), set the command to accio's full path from `command -v accio` and the args to `<project>`, `--no-mask`, `--`, then the server command with its full path. `--no-mask` belongs there: accio passes MCP traffic through untouched, and the flag makes that explicit. Docker's `-e NAME` with no value passes the key through from accio.
+- Never put a key in an MCP command or config: no `-e NAME=value`, no `--env` with a value, no `env` block with a value. If a config already holds one, don't print or copy it. Tell the user which file it's in and ask them to add the key in Fidelius, then switch that server to accio.
 
 Rules:
 - Never print, echo, cat or log secret values. Reference them as `$NAME` inside the command only.
