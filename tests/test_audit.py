@@ -811,6 +811,97 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(report["secrets"][0]["locations"][0]["state"], "history")
 
 
+    def found(self, report):
+        return sorted((loc["where"], s["kind"]) for s in report["secrets"] for loc in s["locations"])
+
+    def test_keys_in_request_headers(self):
+        self.write("app/.mcp.json", {"mcpServers": {"remote": {"type": "http", "url": "https://mcp.example.com/mcp",
+                                                              "headers": {"Authorization": f"Bearer {PW}", "X-Custom-Token": PW + "h"}}}})
+        wheres = [where for where, _ in self.found(self.run_audit())]
+        self.assertEqual(wheres, ["mcpServers.entry-1.headers.Authorization", "mcpServers.entry-1.headers.X-Custom-Token"])
+        self.assertNotIn(PW, self.output)
+
+    def test_codex_http_headers(self):
+        self.write(".codex/config.toml", f'[mcp_servers.remote]\nurl = "https://mcp.example.com/mcp"\nhttp_headers = {{ "X-Api-Key" = "{PW}" }}\n')
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+
+    def test_key_in_url_query(self):
+        self.write("app/.mcp.json", {"mcpServers": {"r": {"url": f"https://mcp.example.com/sse?api_key={PW}"}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+
+    def test_header_json_inside_env(self):
+        self.write("app/.mcp.json", self.server(OPENAPI_MCP_HEADERS=json.dumps({"Authorization": f"Bearer {PW}", "Notion-Version": "2022-06-28"})))
+        report = self.run_audit()
+        self.assertEqual(len(report["secrets"]), 1)
+        self.assertNotIn("2022-06-28", json.dumps(report))
+
+    def test_jsonc_comments_and_trailing_commas(self):
+        self.write("app/.vscode/mcp.json", '{\n  // my servers\n  "servers": {\n    "x": {"command": "npx", "args": ["https://a.example.com//b"], /* note */\n'
+                   f'      "env": {{"LINEAR_API_KEY": "{PW}",}},\n    }},\n  }},\n}}\n')
+        report = self.run_audit()
+        self.assertEqual(len(report["secrets"]), 1)
+        self.assertEqual(report["scanned"]["unreadable"], 0)
+
+    def test_args_read_as_flag_and_value(self):
+        self.write("a/.mcp.json", {"mcpServers": {"x": {"command": "srv", "args": ["--token", "--stdio"]}}})
+        self.write("b/.mcp.json", {"mcpServers": {"x": {"command": "srv", "args": ["--password", "my secret value"]}}})
+        self.write("c/.mcp.json", {"mcpServers": {"x": {"command": "srv", "args": ["-p", 8080, "--api-key", PW]}}})
+        report = self.run_audit()
+        files = sorted(loc["file"].split("/")[-2] for s in report["secrets"] for loc in s["locations"])
+        self.assertEqual(files, ["b", "c"])
+
+    def test_command_and_args_read_together(self):
+        self.write("app/.mcp.json", {"mcpServers": {"cache": {"command": "redis-cli", "args": ["-h", "db.example.com", "-a", PW]}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+
+    def test_bearer_variable_is_not_a_secret(self):
+        self.write("app/.mcp.json", self.server(AUTH_TOKEN="Bearer ${TOKEN}"))
+        self.assertEqual(self.run_audit()["secrets"], [])
+
+    def test_tracked_fixed_config_is_checked_in_git(self):
+        repo = self.home / ".codex"
+        self.write(".codex/config.toml", f'[mcp_servers.x]\ncommand = "npx"\nenv = {{ LINEAR_API_KEY = "{PW}" }}\n')
+        self.git(repo, "init", "-q", "-b", "main")
+        self.git(repo, "add", "config.toml")
+        self.git(repo, "commit", "-qm", "dotfiles")
+        report = self.run_audit()
+        self.assertEqual(len(report["secrets"]), 1)
+        self.assertEqual(report["secrets"][0]["exposure"], "committed")
+
+    def test_other_claude_config_folders(self):
+        self.write(".claude-team/.claude.json", {"mcpServers": {"a": {"command": "x", "env": {"SENTRY_AUTH_TOKEN": PW}}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+
+    def test_claude_json_names_the_project_folder(self):
+        self.write(".claude.json", {"projects": {str(self.home / "skip"): {"lastCost": 1},
+                                                 str(self.home / "app"): {"mcpServers": {"b": {"command": "y", "env": {"API_KEY": PW}}}}}})
+        location = self.run_audit()["secrets"][0]["locations"][0]
+        self.assertTrue(location["project"].endswith("/app"), location)
+
+    def test_vscode_user_config(self):
+        self.write("Library/Application Support/Code/User/mcp.json", {"servers": {"x": {"command": "npx", "env": {"BRAVE_API_KEY": PW}}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+
+    def test_project_codex_config(self):
+        self.write("app/.codex/config.toml", f'[mcp_servers.x]\ncommand = "npx"\nenv = {{ LINEAR_API_KEY = "{PW}" }}\n')
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+
+    def test_root_named_after_a_value_is_hidden(self):
+        root = self.home / PW
+        self.write(f"{PW}/.mcp.json", self.server(GITHUB_TOKEN=PW))
+        result = subprocess.run([sys.executable, str(SCRIPT), str(root), "--json"], env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertNotIn(PW, result.stdout + result.stderr)
+
+    def test_tracked_mcp_json_gets_its_own_hint(self):
+        repo = self.repo("proj")
+        (repo / ".mcp.json").write_text(json.dumps(self.server(GITHUB_PERSONAL_ACCESS_TOKEN=GH)))
+        self.git(repo, "add", ".mcp.json")
+        self.git(repo, "commit", "-qm", "mcp")
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.home)], env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertIn("Git tracks this MCP config", result.stdout)
+        self.assertNotIn(GH, result.stdout)
+
+
 class OldPython(unittest.TestCase):
     def test_toml_without_tomllib_is_reported_not_skipped(self):
         with tempfile.TemporaryDirectory() as folder:

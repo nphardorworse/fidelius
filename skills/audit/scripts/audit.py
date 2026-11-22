@@ -22,17 +22,24 @@ MAX_FILE_BYTES = 5_000_000
 MAX_STRING = 16_384
 MAX_COMMITS = 5000
 # MCP server configs: (folder name or "" for any folder, file name). "" folder means the file can sit in any project.
-MCP_NAMES = (("", ".mcp.json"), (".cursor", "mcp.json"), (".vscode", "mcp.json"), (".gemini", "settings.json"))
+MCP_NAMES = (("", ".mcp.json"), ("", ".claude.json"), (".cursor", "mcp.json"), (".vscode", "mcp.json"), (".gemini", "settings.json"),
+             (".codex", "config.toml"))
 # MCP configs at fixed places below the scanned folder, found when it is the home folder. ~/Library is not walked.
-MCP_FIXED = (".claude.json", os.path.join("Library", "Application Support", "Claude", "claude_desktop_config.json"),
-             os.path.join(".codex", "config.toml"), os.path.join(".codeium", "windsurf", "mcp_config.json"))
+MCP_FIXED = tuple(os.path.join(*parts) for parts in (
+    ("Library", "Application Support", "Claude", "claude_desktop_config.json"),
+    ("Library", "Application Support", "Code", "User", "mcp.json"),
+    (".config", "Claude", "claude_desktop_config.json"),
+    (".config", "Code", "User", "mcp.json"),
+    (".codeium", "windsurf", "mcp_config.json"),
+))
 HISTORY_PATHS = (":(glob)**/.claude/settings.json", ":(glob)**/.claude/settings.local.json", ":(glob)**/.mcp.json",
-                 ":(glob)**/.cursor/mcp.json", ":(glob)**/.vscode/mcp.json", ":(glob)**/.gemini/settings.json")
+                 ":(glob)**/.cursor/mcp.json", ":(glob)**/.vscode/mcp.json", ":(glob)**/.gemini/settings.json", ":(glob)**/.codex/config.toml")
+HEADER_PARENTS = {"headers", "http_headers"}
 
 # Settings keys safe to name in a report. Any other key is untrusted text and is shown by position.
 KNOWN_KEYS = {
     "permissions", "allow", "ask", "deny", "additionalDirectories", "defaultMode", "env", "hooks", "matcher", "command",
-    "type", "apiKeyHelper", "statusLine", "mcpServers", "args", "url", "headers", "servers", "mcp_servers", "projects", "inputs",
+    "type", "apiKeyHelper", "statusLine", "mcpServers", "args", "url", "headers", "servers", "mcp_servers", "projects", "inputs", "http_headers",
 }
 
 PROVIDERS = [
@@ -64,8 +71,10 @@ COMMAND_SHAPES = [
     ("Token in a request header", r"(?i)authorization:\s*(?:bearer|token|basic)\s+(?P<v>[^\s'\")]+)"),
     ("Token in a request header", r"(?i)(?:x-api-key|x-auth-token|api-key|apikey):\s*(?P<v>[^\s'\")]+)"),
     ("Password in a connection URL", r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@'\"]*:(?P<v>[^@/\s'\"]+)@"),
+    ("Key in a URL", r"[?&](?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|key|secret)=(?P<v>[^&\s'\"#]+)"),
 ]
 SAFE_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,48}")
+SAFE_HEADER_NAME = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,48}")
 COMPILED_PROVIDERS = [(kind, re.compile(rx)) for kind, rx in PROVIDERS]
 COMPILED_SHAPES = [(kind, re.compile(rx)) for kind, rx in COMMAND_SHAPES]
 LOOPBACK = re.compile(r"\b(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\.internal)\b|\[::1\]", re.I)
@@ -112,7 +121,7 @@ def is_placeholder(value, literal=False):
     """Single quotes stop the shell expanding anything, so a leading $ or * is then part of a real value."""
     if len(value) < 4 or PLACEHOLDER.match(value) or (value[0] == "<" and value[-1] == ">"):
         return True
-    return not literal and (value[0] in "$<*" or value.startswith("{{"))
+    return not literal and (value[0] in "$<*-" or value.startswith("{{") or "${" in value)  # "-": the next flag, not a value.
 
 
 def skip_named_value(name, value, literal=False):
@@ -167,21 +176,26 @@ def detect(text):
     return [(kind, value, conf) for value, (kind, conf) in found.items()]
 
 
-def walk_strings(node, where="", key="", parent=""):
+def walk_strings(node, where="", key="", parent="", command=""):
     """Yield (location, text, key, parent key). The location holds no text from the file."""
     if isinstance(node, dict):
         for position, (child_key, child) in enumerate(node.items(), 1):
             if child_key != "$schema":
-                readable = child_key in KNOWN_KEYS or (key == "env" and SAFE_ENV_NAME.fullmatch(child_key) and not detect(child_key))
+                readable = child_key in KNOWN_KEYS or not detect(child_key) and (
+                    key == "env" and SAFE_ENV_NAME.fullmatch(child_key) or key in HEADER_PARENTS and SAFE_HEADER_NAME.fullmatch(child_key))
                 label = child_key if readable else f"entry-{position}"
                 if child_key not in KNOWN_KEYS:
                     yield f"{where}.{label}" if where else label, child_key, "", ""
-                yield from walk_strings(child, f"{where}.{label}" if where else label, child_key, key)
-    elif isinstance(node, list) and key == "args" and node and all(isinstance(child, str) for child in node):
-        yield where, " " + " ".join(node), key, parent  # MCP args split a flag from its value, so read them as one command line.
+                program = node.get("command") if child_key == "args" and isinstance(node.get("command"), str) else ""
+                yield from walk_strings(child, f"{where}.{label}" if where else label, child_key, key, program)
     elif isinstance(node, list):
         for index, child in enumerate(node):
             yield from walk_strings(child, f"{where}[{index}]", key, parent)
+        if key == "args":  # MCP args split a flag from its value, so also read them, after the command, as one command line.
+            words = [str(child) for child in node if isinstance(child, (str, int, float)) and not isinstance(child, bool)]
+            words = ([command] if command else []) + words
+            if words:
+                yield where, " " + " ".join(f'"{word}"' if re.search(r"\s", word) else word for word in words), key, parent
     elif isinstance(node, str):
         yield where, node, key, parent
 
@@ -198,12 +212,23 @@ def command_hint(text):
 
 def scan_document(document):
     """Return (where, kind, value, confidence, program) for every secret in a parsed settings file."""
-    results = []
+    results, seen = [], set()
     for where, text, key, parent in walk_strings(document):
         hits = detect(text)
+        if not hits and parent in HEADER_PARENTS:
+            hits = detect(f"{key}: {text}") or (
+                [("Token in a request header", text, "medium")] if is_secret_name(key.upper().replace("-", "_")) and not is_placeholder(text) else [])
         if not hits and parent == "env" and is_secret_name(key) and not skip_named_value(key, text):
             hits = [("Secret in an env setting", text, "medium")]
-        results.extend((where, kind, value, conf, command_hint(text)) for kind, value, conf in hits)
+        if not hits and text.lstrip().startswith("{"):  # Headers kept as JSON in one setting, such as OPENAPI_MCP_HEADERS.
+            inner = parse(text.encode("utf-8", "replace"))
+            for name, value in inner.items() if isinstance(inner, dict) else ():
+                if isinstance(value, str):
+                    hits += detect(f"{name}: {value}")
+        for kind, value, conf in hits:
+            if value not in seen:  # The same value can turn up in one args item and in the joined command line.
+                seen.add(value)
+                results.append((where, kind, value, conf, command_hint(text)))
     return results
 
 
@@ -236,9 +261,9 @@ def discover(root):
         if os.path.lexists(os.path.join(root, relative)):
             add_file(os.path.join(root, relative), mcp, links)
     for dirpath, dirnames, filenames in os.walk(root, onerror=errors.append, followlinks=False):
-        folder = os.path.basename(dirpath)
+        folder, names = os.path.basename(dirpath), set(filenames)
         for parent, name in MCP_NAMES:
-            if name in filenames and parent in ("", folder) and not (parent == "" and folder == ".claude"):
+            if name in names and parent in ("", folder) and not (parent == "" and folder == ".claude"):
                 add_file(os.path.join(dirpath, name), mcp, links)
         if os.path.basename(dirpath) == ".claude":
             for name in SETTINGS_NAMES:
@@ -270,17 +295,52 @@ def discover(root):
             if os.path.isfile(path) and path not in settings:
                 settings.append(path)
         path = os.path.realpath(os.path.join(os.path.expanduser(config), ".claude.json"))
-        if os.path.isfile(path) and path not in mcp:
+        if os.path.isfile(path):
             mcp.append(path)
-    return settings, mcp, repos, len(errors), links
+    unique = {}
+    for path in mcp:
+        unique.setdefault(os.path.realpath(path), path)
+    return settings, list(unique.values()), repos, len(errors), links
+
+
+def strip_jsonc(text):
+    """Drop // and /* */ comments, then trailing commas, outside strings (VS Code and Cursor allow both)."""
+    for drop_commas in (False, True):
+        out, i, n, in_string = [], 0, len(text), False
+        while i < n:
+            char = text[i]
+            if in_string:
+                out.append(text[i:i + 2] if char == "\\" else char)
+                i += 2 if char == "\\" else 1
+                in_string = char != '"'
+                continue
+            if char == '"':
+                in_string = True
+            elif not drop_commas and text.startswith("//", i):
+                end = text.find("\n", i)
+                i = n if end < 0 else end
+                continue
+            elif not drop_commas and text.startswith("/*", i):
+                end = text.find("*/", i + 2)
+                i = n if end < 0 else end + 2
+                continue
+            elif drop_commas and char == "," and re.match(r"\s*[}\]]", text[i + 1:i + 200]):
+                i += 1
+                continue
+            out.append(char)
+            i += 1
+        text = "".join(out)
+    return text
 
 
 def parse(raw):
-    try:
-        document = json.loads(raw)
-    except (ValueError, RecursionError):
-        return None
-    return document if isinstance(document, (dict, list)) else None
+    for attempt in (lambda: json.loads(raw), lambda: json.loads(strip_jsonc(raw.decode("utf-8", "replace")))):
+        try:
+            document = attempt()
+        except (ValueError, RecursionError):
+            continue
+        return document if isinstance(document, (dict, list)) else None
+    return None
 
 
 class NeedsNewerPython(Exception):
@@ -307,7 +367,11 @@ def read_settings(path):
             raw = handle.read()
     except OSError:
         return None
-    if path.endswith(".toml"):
+    return parse_config(os.path.basename(path), raw)
+
+
+def parse_config(name, raw):
+    if name.endswith(".toml"):
         try:
             import tomllib
         except ImportError:
@@ -317,7 +381,7 @@ def read_settings(path):
         except (ValueError, UnicodeDecodeError, RecursionError):
             return None
     document = parse(raw)
-    return mcp_only(document) if os.path.basename(path) == ".claude.json" and document is not None else document
+    return mcp_only(document) if name == ".claude.json" and document is not None else document
 
 
 def inside_a_repo(folder):
@@ -405,20 +469,24 @@ class Audit:
         self.remote_cache = {}
         self.incomplete = {}
         self.checkouts = {}
+        self.tracked = {}  # repo id -> paths of tracked files found on disk, so their history is read too.
 
     def show(self, path):
         """A printable path, with any folder name that is itself a secret hidden."""
         shown = "~" + path[len(self.home):] if path.startswith(self.home + os.sep) else path
         return "/".join("<hidden>" if detect(part) else safe(part) for part in shown.split("/"))
 
-    def record(self, findings, exposure, location, repo=None):
+    def record(self, findings, exposure, location, repo=None, projects=()):
         for where, kind, value, conf, program in findings:
+            project = re.match(r"projects\.entry-(\d+)(?:\.|$)", where)
             entry = self.by_value.setdefault(value, {"kind": kind, "confidence": conf, "exposure": exposure, "locations": [], "repos": set()})
             if CONFIDENCE_RANK[conf] < CONFIDENCE_RANK[entry["confidence"]]:
                 entry.update(kind=kind, confidence=conf)
             if EXPOSURE_RANK[exposure] < EXPOSURE_RANK[entry["exposure"]]:
                 entry["exposure"] = exposure
             entry["locations"].append(dict(location, where=where, program=program))
+            if project and int(project[1]) <= len(projects):
+                entry["locations"][-1]["project"] = self.show(projects[int(project[1]) - 1])
             if exposure == "pushed" and repo:
                 entry["repos"].add(repo)
 
@@ -432,7 +500,8 @@ class Audit:
         return "unknown" if remote is None else "pushed" if commit in remote else "committed"
 
     def scan_history(self, repo, rid):
-        paths = HISTORY_PATHS + (SETTINGS_NAMES if os.path.basename(repo) == ".claude" else ())
+        paths = HISTORY_PATHS + (SETTINGS_NAMES if os.path.basename(repo) == ".claude" else ()) + tuple(
+            ":(literal)" + path for path in sorted(self.tracked.get(rid, ())))
         code, out = git(repo, "log", "--all", "--reflog", "--full-history", "--no-renames", "--diff-merges=first-parent", "-z", "--format=%H", "--name-only",
                         "--diff-filter=d", f"--max-count={MAX_COMMITS}", "--", *paths, timeout=180)
         if code != 0:
@@ -459,7 +528,11 @@ class Audit:
         if code != 0:
             self.incomplete.setdefault(rid, "an old version of a settings file is missing or too large")
             return
-        document = parse(blob)
+        try:
+            document = parse_config(os.path.basename(path), blob)
+        except NeedsNewerPython:
+            self.incomplete.setdefault(rid, "an old config.toml needs Python 3.11 or later to check")
+            return
         if document is None:
             self.incomplete.setdefault(rid, "an old version of a settings file couldn't be parsed")
             return
@@ -494,7 +567,11 @@ class Audit:
             if repo:
                 repos.append(repo)
             rid = repo_id(os.path.dirname(path)) if repo else None
-            self.record(findings, "local", {"state": "current", "file": self.show(path), "git": state, "_repo": rid, "_failed": state == "could not check git"})
+            if rid and state == "tracked":
+                self.tracked.setdefault(rid, set()).add(os.path.relpath(os.path.realpath(path), os.path.realpath(repo)))
+            projects = list(document.get("projects", {})) if os.path.basename(path) == ".claude.json" and isinstance(document, dict) else ()
+            self.record(findings, "local", {"state": "current", "file": self.show(path), "git": state, "_repo": rid, "_failed": state == "could not check git"},
+                        projects=projects)
         seen = set()
         for repo in repos:
             rid = repo_id(repo)
@@ -517,7 +594,7 @@ class Audit:
                 failed, repo = location.pop("_failed", False), location.pop("_repo", None)
                 if (failed or repo in self.incomplete) and EXPOSURE_RANK[secret["exposure"]] > EXPOSURE_RANK["unknown"]:
                     secret["exposure"] = "unknown"
-                for field in ("file", "repo"):
+                for field in ("file", "repo", "project"):
                     if field in location:
                         location[field] = self.hide_found_values(location[field])
                 location["where"] = ".".join(part if re.sub(r"\[\d+\]", "", part) in KNOWN_KEYS or not any(v in part for v in self.by_value) else "entry" for part in location["where"].split("."))
@@ -536,7 +613,7 @@ class Audit:
             secret["action"] = action_for(secret)
         details = [{"repo": self.hide_found_values(self.show(self.checkouts.get(key, key))), "reason": reason} for key, reason in sorted(self.incomplete.items())]
         return {
-            "scanned": {"root": self.show(self.root), "settings_files": len(settings), "mcp_files": len(mcp), "repos": len(seen), "unreadable": len(unreadable),
+            "scanned": {"root": self.hide_found_values(self.show(self.root)), "settings_files": len(settings), "mcp_files": len(mcp), "repos": len(seen), "unreadable": len(unreadable),
                         "needs_python_3_11": [self.hide_found_values(path) for path in needs_python],
                         "unreadable_files": [self.hide_found_values(path) for path in unreadable], "unreadable_folders": unreadable_dirs, "incomplete_repos": len(self.incomplete),
                         "incomplete_details": details, "skipped_links": [self.hide_found_values(path) for path in links]},
@@ -572,7 +649,7 @@ def table(rows):
 
 def location_row(secret, loc):
     kind = secret["kind"] + (" (probably a local dev password)" if secret["confidence"] == "low" else "") + (f", {secret['visibility']} repo" if secret.get("visibility") else "")
-    where = loc["where"] + (f" ({loc['program']})" if loc.get("program") else "")
+    where = loc["where"] + (f" ({loc['program']})" if loc.get("program") else "") + (f" in {loc['project']}" if loc.get("project") else "")
     return [secret["id"], where, kind] if loc["state"] == "current" else [secret["id"], f"commit {loc['commit']}", f"{loc['file']} {where}", kind]
 
 

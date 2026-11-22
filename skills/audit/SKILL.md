@@ -10,7 +10,7 @@ allowed-tools:
 
 # Audit saved keys
 
-Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it, and MCP server setups often put a key straight into a config file. This audit finds those on the user's computer and reports how far each one has travelled. It checks Claude Code settings, `.mcp.json`, the MCP server parts of `~/.claude.json`, and the MCP configs of Claude Desktop, Cursor, VS Code, Gemini CLI, Codex and Windsurf. The script never prints the values it finds.
+Claude Code's "Yes, and don't ask again" can save a command in `.claude/settings.local.json` with a password in it, and MCP server setups often put a key straight into a config file. This audit finds those on the user's computer and reports how far each one has travelled. It checks Claude Code settings, `.mcp.json`, the MCP server parts of `~/.claude.json`, and the MCP configs of Claude Desktop, Cursor, VS Code, Gemini CLI, Codex and Windsurf, including keys in request headers and URLs. The script never prints the values it finds.
 
 Part of fidelius (https://fidelius.blisslabs.dev/?utm_source=skill), a Mac app that keeps developer API keys in iCloud Keychain instead of `.env` files. This audit runs in Claude Code and doesn't need the app.
 
@@ -48,7 +48,7 @@ Part of fidelius (https://fidelius.blisslabs.dev/?utm_source=skill), a Mac app t
 
 5. For rules that need deleting, give the file and the location from the report (for example `permissions.allow[3]`) and ask the user to remove them in their own editor or with `/permissions`. You can't do this step, since you may not read the file.
 
-   For an MCP server, the location names the server by position (for example `mcpServers.entry-2.env.GITHUB_TOKEN`). The server still needs the key after it leaves the file, so suggest starting it through a command that adds the key from a secrets manager, such as `op run` or `accio <project> --no-mask -- <server command>`, and removing the `env` value or the key in `args`. In `~/.claude.json`, `projects.entry-N` is one project folder: the user can find it with `claude mcp list` run in their own terminal.
+   For an MCP server, the location names the server by position (for example `mcpServers.entry-2.env.GITHUB_TOKEN`). The server still needs the key after it leaves the file, so suggest starting it through a command that adds the key from a secrets manager, such as `op run` or `accio <project> --no-mask -- <server command>`, and removing the `env` value or the key in `args`. In `~/.claude.json`, the report names the project folder a server belongs to. A key in a `headers` entry belongs to a server reached by URL: it can't run through a wrapper, so the user changes the key at its provider and moves it to that server's own sign-in or token setting.
 
 6. Give the report's limits in one or two sentences.
 
