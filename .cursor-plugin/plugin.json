@@ -8,7 +8,7 @@
   "homepage": "https://fidelius.blisslabs.dev/help/",
   "repository": "https://github.com/nphardorworse/fidelius",
   "license": "MIT",
-  "logo": ".claude-plugin/icon.png",
+  "logo": "assets/logo.png",
   "keywords": [
     "secrets",
     "api-keys",
