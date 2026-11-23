@@ -1222,6 +1222,12 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("Zq9vT2pLk8Hx3mWn", scan.display(str(self.home) + "/Zq9vT2pLk8Hx3mWn/.mcp.json"))
         self.assertNotIn("secret123456", scan.display("/tmp/my\tsecret123456"))
 
+    def test_folder_that_is_part_of_a_long_value_is_hidden(self):
+        scan = audit.Audit(str(self.home), str(self.home))
+        scan.by_value["Zq9vT2pLk8Hx3mWnRt5y"] = {}
+        self.assertNotIn("Zq9vT2pLk8", scan.display("/tmp/Zq9vT2pLk8/.mcp.json"))
+        self.assertIn("projects", scan.display("/tmp/projects/.mcp.json"))
+
     def test_header_or_env_name_that_is_part_of_a_value_is_hidden(self):
         self.write("app/.mcp.json", {"mcpServers": {"s": {"headers": {ANTHROPIC[:19]: ANTHROPIC}}}})
         self.settings(self.home / "app", {"env": {AWS[:18]: AWS}})

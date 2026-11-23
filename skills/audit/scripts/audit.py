@@ -633,7 +633,7 @@ class Audit:
 
     def display(self, path):
         """A printable path. Values are matched in the raw path and again after ~ and escaping change it.
-        A folder that holds a long found value, or a secret of its own, is hidden, and the whole path when a value spans folders
+        A folder that holds a long found value, is 8+ characters of one, or holds a secret of its own, is hidden, and the whole path when a value spans folders
         or the path is too long to check. Short found values aren't hidden, so they can't be located by elimination."""
         long_values = [value for value in self.by_value if len(value) >= 12]
 
@@ -642,7 +642,8 @@ class Audit:
             parts = text.split("/")
             if len(text) > MAX_STRING or any(value in text and not any(value in part for part in parts) for value in values):
                 return "<hidden>"
-            return "/".join("<hidden>" if detect(part) or any(value in part for value in values) else part for part in parts)
+            return "/".join("<hidden>" if detect(part) or any(value in part or (len(part) >= 8 and part in value) for value in values)
+                            else part for part in parts)
 
         text = hide(path)
         text = "~" + text[len(self.home):] if text.startswith(self.home + os.sep) else text
