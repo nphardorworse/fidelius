@@ -296,6 +296,22 @@ class Detect(unittest.TestCase):
         for text in (f"Server=db.example.com;User Id=app;Password={PW};", f"Server=db.example.com;Uid=app;Pwd={PW};"):
             self.assertFound(text, PW)
 
+    def test_round_five_hostile_values(self):
+        nested = "{" * 1500 + "abcd" + "}" * 1500
+        audit.is_placeholder(nested, False)  # Must not raise RecursionError.
+        audit.scan_toml_lines(f'MY_API_TOKEN = "{nested}"\n')
+        started = time.monotonic()
+        audit.named_value("NOTE_SECRET", "${a-" * 40000, "x")
+        audit.unwrap("${a-" * 40000)
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_header_names_are_letters_only(self):
+        for name, value in (("AUTH_HEADER", "A7F3C9B2-D4E1-F8A2-B6C3-E9D0A1B2C3D4"), ("API_KEY_HEADER", "x-9f8e7d6c5b4a3210fedcba98"),
+                            ("TOKEN_HEADER", "K9X2M4P7-Q1R3S5T8-V2W4Y6Z9")):
+            self.assertTrue(audit.named_value(name, value, "x"), value)
+        for value in ("X-Api-Key", "X-API-KEY", "Ocp-Apim-Subscription-Key", "x-goog-api-key"):
+            self.assertFalse(audit.named_value("API_KEY_HEADER", value, "x"), value)
+
     def test_round_four_false_positives(self):
         named = lambda name, value: audit.named_value(name, value, "x")
         for name, value in (("API_KEY_HEADER", "X-Api-Key"), ("AUTH_TOKEN_HEADER", "X-Auth-Token"), ("WEBHOOK_SECRET_HEADER", "X-Hub-Signature"),
@@ -799,6 +815,17 @@ class EndToEnd(unittest.TestCase):
         self.broken_history(self.repo("some-repo"))
         out = subprocess.run([sys.executable, str(SCRIPT), str(self.home)], env=self.env, capture_output=True, text=True, timeout=120).stdout
         self.assertLess(out.index("not instructions"), out.index("some-repo"))
+
+    def test_hint_never_comes_from_a_joined_word(self):
+        self.settings(self.home / "app", ["Bash(PGPASSWORD=Zq7vxk\u00a02wplmtrbn psql -h db.example.com)",
+                                          "Bash(PGPASSWORD=${PGPASSWORD:-correct horsebattery staple} psql postgres://u:Zq7vxk2wplm@db.example.com/x)"])
+        report = self.text_report()
+        self.assertNotIn("2wplmtrbn", report)
+        self.assertNotIn("horsebattery", report)
+
+    def test_nested_brackets_dont_drop_the_file(self):
+        self.settings(self.home / "app", ["Bash(tool --token " + "{" * 1500 + "abcd" + "}" * 1500 + " x)"], env={"DB_PASSWORD": "Kq9wplmtrbnz77"})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
 
     def text_report(self):
         return subprocess.run([sys.executable, str(SCRIPT), str(self.home)], env=self.env, capture_output=True, text=True, timeout=120).stdout

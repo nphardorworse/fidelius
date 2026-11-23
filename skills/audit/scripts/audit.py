@@ -109,7 +109,7 @@ PATH_LIKE = re.compile(r"(?:~|\.\.?)/|/(?:Users|home|etc|var|tmp|opt|run|usr|Lib
 EXPLICIT_URL_NAME = re.compile(r"(?i)(?:api[_-]?key|apikey|(?:access|auth|api|private)[_-]?token|secret|password)$")
 PLAIN_PREFIX = re.compile(r"(?i)[_.-]?(?:sort|order|cache|project|page|next|starting|continuation|sync|resume|public|publishable|partition|routing|idempotency)")
 PLAIN_KEY_PARTS = {"PROJECT", "SPACE", "TEAM", "BOARD", "CACHE", "SORT", "PARTITION", "ROUTING", "IDEMPOTENCY", "OBJECT", "S3"}  # *_KEY names that hold no secret.
-HEADER_NAME_VALUE = re.compile(r"(?i:x-[a-z0-9-]+|authorization|proxy-authorization|cookie)|[A-Z][A-Za-z0-9]*(?:-[A-Z][A-Za-z0-9]*)+")
+HEADER_NAME_VALUE = re.compile(r"(?i:x-[a-z]+(?:-[a-z]+)*|authorization|proxy-authorization|cookie)|[A-Z][A-Za-z]*(?:-[A-Z][A-Za-z]*)+")
 AUTH_MODE = re.compile(r"(?i)o?auth2?|basic|bearer|digest|ntlm|negotiate|kerberos|gssapi|scram-sha-(?:1|256)(?:-plus)?|md5|password|trust|peer|ident"
                        r"|cert|mtls|tls|iam|sigv4|jwt|oidc|saml|ldap|enabled|disabled|on|off|true|false|none|header|query|cookie|token|api[-_]?key")
 ENV_FLAG = re.compile(r"(?:(?<![\w-])-e|(?<![\w-])--env|(?<![\w-])env)(?:\s+|=)[\"']?$")  # docker -e, --env and env before NAME=value.
@@ -170,14 +170,17 @@ def is_placeholder(value, literal=False, flag=False):
     flag: the value is an unquoted word of its own after a flag, so a leading "-" makes it the next flag."""
     if len(value) < 4 or PLACEHOLDER.fullmatch(value) or FILLER.fullmatch(value) or (value[0] == "<" and value[-1] == ">"):
         return True
-    if value[0] + value[-1] in ("{}", "[]") and is_placeholder(value[1:-1], literal):  # {YOUR_API_KEY}
+    depth = 0  # {YOUR_API_KEY}, counted in a loop so deep nesting can't recurse.
+    while depth < len(value) // 2 and value[depth] + value[-1 - depth] in ("{}", "[]"):
+        depth += 1
+    if depth and is_placeholder(value[depth:len(value) - depth], literal):
         return True
     return (not literal and bool(value[0] in "$<*" or BRACED_VARIABLE.search(value) or VARIABLE.search(value) or TEMPLATE.search(value))) or (flag and value[0] == "-")
 
 
 def unwrap(value):
     """${NAME:-default} falls back to its default, which can be a real key."""
-    match = DEFAULT_VALUE.search(value)
+    match = DEFAULT_VALUE.search(value, 0, value.rfind("}") + 1)
     return match[1] if match else value
 
 
@@ -192,7 +195,7 @@ def skip_named_value(name, value, literal=False):
 
 def named_value(name, text, kind):
     """A value saved under a secret-looking name in an env or headers block, without a "Bearer " in front."""
-    value = text.strip()
+    value = text[:MAX_STRING].strip()  # The same 16 KB cap as detect().
     scheme = AUTH_SCHEME.match(value)
     value = unwrap(value[scheme.end():] if scheme else value)
     last = name.upper().replace("-", "_").split("_")[-1]
@@ -320,8 +323,8 @@ def command_hint(text):
     """The program a saved Bash rule runs, such as psql. Empty unless it is plainly just a program name.
     A quote, backslash or $( joins words, so any of them before the program word gives no name."""
     match = re.match(r"Bash\((.*)\)$", text, re.S)
-    for word in match[1].split() if match else []:
-        if re.search(r"[\"'\\`()]", word):
+    for word in re.findall(r"[^ \t\n]+", match[1]) if match else []:  # Split like the shell; refuse anything that joins words.
+        if re.search(r"[\"'\\`(){}$]|[^\x21-\x7e]", word):
             return ""
         if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", word):
             name = os.path.basename(word)
@@ -568,7 +571,10 @@ def check_config(name, raw):
         try:
             import tomllib
         except ImportError:
-            return scan_toml_lines(raw.decode("utf-8-sig", "replace")), None, "simple"
+            try:
+                return scan_toml_lines(raw.decode("utf-8-sig", "replace")), None, "simple"
+            except RecursionError:
+                return None, None, "couldn't be parsed"
         try:
             document = tomllib.loads(raw.decode("utf-8-sig"))
         except (ValueError, UnicodeDecodeError, RecursionError):
@@ -724,7 +730,7 @@ class Audit:
         for merges in (["--diff-merges=first-parent"], []):  # Git before 2.31 doesn't know --diff-merges.
             code, out = git(repo, "log", "--all", "--reflog", "--full-history", "--no-renames", *merges, "-z", "--format=%H", "--name-only",
                             "--diff-filter=d", f"--max-count={MAX_COMMITS}", "--", *paths, timeout=180)
-            if code == 0:
+            if code in (0, -1):  # Don't retry after a timeout.
                 break
         if code != 0:
             self.incomplete.setdefault(rid, "git couldn't read its history")
