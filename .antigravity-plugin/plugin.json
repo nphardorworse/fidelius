@@ -1,0 +1,28 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "fidelius",
+  "displayName": "fidelius",
+  "version": "1.2.2",
+  "description": "Runs your commands through accio, so a project's API keys come from the fidelius Mac app, built on iCloud Keychain, instead of .env files.",
+  "logo": "assets/logo.png",
+  "suggestedPrompts": [
+    "Run the dev server with this project's keys from fidelius",
+    "Move this repo's .env into fidelius",
+    "Find API keys saved in my agent settings and MCP configs"
+  ],
+  "author": {
+    "name": "Bliss Labs",
+    "url": "https://fidelius.blisslabs.dev"
+  },
+  "homepage": "https://fidelius.blisslabs.dev/help/",
+  "repository": "https://github.com/nphardorworse/fidelius",
+  "license": "MIT",
+  "keywords": [
+    "secrets",
+    "api-keys",
+    "environment-variables",
+    "keychain",
+    "macos",
+    "mcp"
+  ]
+}

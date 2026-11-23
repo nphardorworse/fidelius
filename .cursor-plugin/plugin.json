@@ -1,6 +1,6 @@
 {
   "name": "fidelius",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Teaches the agent to run commands through accio, the command line tool of the fidelius Mac app (built on iCloud Keychain), so a project's API keys reach the command as environment variables instead of being read from .env files or MCP configs. Needs the fidelius app. Also adds an audit that finds keys saved in agent settings and MCP server configs, and works without the app.",
   "author": {
     "name": "Bliss Labs"
