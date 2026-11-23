@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fidelius",
+  "version": "1.2.1",
+  "description": "Has the agent run commands through accio, the command line tool of the fidelius Mac app (built on iCloud Keychain), so a project's API keys reach the command as environment variables instead of being read from .env files or MCP configs. Needs the fidelius app.",
+  "author": {
+    "name": "Bliss Labs",
+    "url": "https://fidelius.blisslabs.dev"
+  },
+  "homepage": "https://fidelius.blisslabs.dev/help/",
+  "repository": "https://github.com/nphardorworse/fidelius",
+  "license": "MIT",
+  "keywords": [
+    "secrets",
+    "api-keys",
+    "environment-variables",
+    "keychain",
+    "macos",
+    "mcp"
+  ]
+}
