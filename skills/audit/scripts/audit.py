@@ -195,7 +195,7 @@ def skip_named_value(name, value, literal=False):
 
 def named_value(name, text, kind):
     """A value saved under a secret-looking name in an env or headers block, without a "Bearer " in front."""
-    value = text[:MAX_STRING].strip()  # The same 16 KB cap as detect().
+    value = text.lstrip()[:MAX_STRING].strip()  # The same 16 KB cap as detect().
     scheme = AUTH_SCHEME.match(value)
     value = unwrap(value[scheme.end():] if scheme else value)
     last = name.upper().replace("-", "_").split("_")[-1]
@@ -322,7 +322,7 @@ def walk_strings(node, where="", key="", parent="", command=""):
 def command_hint(text):
     """The program a saved Bash rule runs, such as psql. Empty unless it is plainly just a program name.
     A quote, backslash or $( joins words, so any of them before the program word gives no name."""
-    match = re.match(r"Bash\((.*)\)$", text, re.S)
+    match = re.match(r"Bash\((.*)\)$", text, re.S) if len(text) <= MAX_STRING else None  # Past the cap a value is only partly known.
     for word in re.findall(r"[^ \t\n]+", match[1]) if match else []:  # Split like the shell; refuse anything that joins words.
         if re.search(r"[\"'\\`(){}$]|[^\x21-\x7e]", word):
             return ""

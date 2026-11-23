@@ -305,6 +305,9 @@ class Detect(unittest.TestCase):
         audit.unwrap("${a-" * 40000)
         self.assertLess(time.monotonic() - started, 2)
 
+    def test_key_after_long_leading_space(self):
+        self.assertTrue(audit.named_value("API_KEY", " " * 16384 + "fakeFAKE0123456789abcd", "x"))
+
     def test_header_names_are_letters_only(self):
         for name, value in (("AUTH_HEADER", "A7F3C9B2-D4E1-F8A2-B6C3-E9D0A1B2C3D4"), ("API_KEY_HEADER", "x-9f8e7d6c5b4a3210fedcba98"),
                             ("TOKEN_HEADER", "K9X2M4P7-Q1R3S5T8-V2W4Y6Z9")):
@@ -822,6 +825,13 @@ class EndToEnd(unittest.TestCase):
         report = self.text_report()
         self.assertNotIn("2wplmtrbn", report)
         self.assertNotIn("horsebattery", report)
+
+    def test_no_hint_past_the_size_cap(self):
+        rule = "Bash(A=" + "x" * 16349 + " --password=FAKEHEADfake0001" + "FAKEMIDDLE/fakelowertail0002 run)"
+        self.settings(self.home / "app", [rule])
+        result = self.run_audit()
+        self.assertNotIn("fakelowertail0002", json.dumps(result))
+        self.assertNotIn("fakelowertail0002", self.text_report())
 
     def test_nested_brackets_dont_drop_the_file(self):
         self.settings(self.home / "app", ["Bash(tool --token " + "{" * 1500 + "abcd" + "}" * 1500 + " x)"], env={"DB_PASSWORD": "Kq9wplmtrbnz77"})
