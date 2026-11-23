@@ -82,8 +82,8 @@ COMMAND_SHAPES = [
     ("Password in a command", r"\bdocker\s+login\b[^|;&]*?\s(?:-p|--password)\s+" + VALUE),
     ("Password in a command", r"\b(?:curl|wget)\b[^|;&]*?\s(?:-u|--user)\s+['\"]?[^\s:'\"]+:(?P<v>[^\s'\")]+)"),
     ("Token in a request header", r"(?i)authorization:\s*(?:(?:bearer|token|basic|apikey|api-key|key)\s+)?(?P<v>[^\s'\")]+)"),
-    ("Token in a request header", r"(?i)(?<![\w-])(?:x-(?![a-z0-9-]*(?:public|publishable|idempotency|cache|partition|routing))[a-z0-9-]*(?:key|token|secret)"
-                                  r"|api-?key|ocp-apim-subscription-key|cookie):\s*(?P<v>[^\s'\")]+)"),
+    ("Token in a request header", r"(?i)(?<![\w-])(?:(?![a-z0-9-]*(?:public|publishable|idempotency|cache|partition|routing))"
+                                  r"(?:x-[a-z0-9-]*(?:key|token|secret)|(?:[a-z0-9]+-)*api-?key)|ocp-apim-subscription-key|cookie):\s*(?P<v>[^\s'\")]+)"),
     ("Password in a connection URL", r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@'\"]*:(?P<v>[^@/\s'\"]+)@"),
     ("Key in a URL", r"[?&](?P<n>(?:[A-Za-z0-9_.-]*[_.-]|[A-Za-z0-9_.-]*[a-z0-9](?=[A-Z]))?" + URL_NAMES + r")=(?P<v>[^&\s'\"#)]+)"),
 ]
@@ -99,6 +99,7 @@ PLACEHOLDER = re.compile(r"(?i)(?:your|insert|enter|paste)[-_ ].*|my[-_](?:passw
                          r"|(?-i:[A-Z]+(?:_[A-Z]+)+)")
 FILLER = re.compile(r"(?i)(?:[a-z][a-z0-9]{0,5}[-_])*([x*._#-])\1{2,}")  # "sk-xxx", "ghp_xxxx" or "...".
 TEMPLATE = re.compile(r"\{\{[^{}]*\}\}")
+BRACED_VARIABLE = re.compile(r"\$\{[^{}]+\}")
 # A file path, not a key: under a usual top folder, relative to ~ or ., or a relative path to a file. Base64 keys can start with "/".
 PATH_LIKE = re.compile(r"(?:~|\.\.?)/|/(?:Users|home|etc|var|tmp|opt|run|usr|Library|private|mnt|srv|Volumes|root)/|[\w.-]+(?:/[\w.-]+)+\.[A-Za-z0-9]{1,5}$")
 EXPLICIT_URL_NAME = re.compile(r"(?i)(?:api[_-]?key|apikey|(?:access|auth|api|private)[_-]?token|secret|password)$")
@@ -156,10 +157,11 @@ def is_secret_name(name, block=False):
 
 
 def is_placeholder(value, literal=False, flag=False):
-    """Single quotes stop the shell expanding anything, so a $ or * is then part of a real value. A leading "-" is the next flag only after a flag."""
+    """Single quotes stop the shell expanding anything, so a $ or * is then part of a real value.
+    flag: the value is an unquoted word of its own after a flag, so a leading "-" makes it the next flag."""
     if len(value) < 4 or PLACEHOLDER.fullmatch(value) or FILLER.fullmatch(value) or (value[0] == "<" and value[-1] == ">"):
         return True
-    return (not literal and bool(value[0] in "$<*" or "${" in value or VARIABLE.search(value) or TEMPLATE.search(value))) or (flag and value[0] == "-")
+    return (not literal and bool(value[0] in "$<*" or BRACED_VARIABLE.search(value) or VARIABLE.search(value) or TEMPLATE.search(value))) or (flag and value[0] == "-")
 
 
 def unwrap(value):
@@ -169,10 +171,9 @@ def unwrap(value):
 
 
 def skip_named_value(name, value, literal=False):
-    """A number under a TOKEN-style name is usually a limit, and a path names a file. Under a password name a number can be real."""
-    upper = name.upper()
-    return (is_placeholder(value, literal) or (value.isdigit() and "PASS" not in upper and "PWD" not in upper)
-            or PATH_LIKE.match(value) is not None)
+    """A number under a TOKEN-style name is usually a limit, and a path names a file. Under a password name either can be real."""
+    password = "PASS" in name.upper() or "PWD" in name.upper()
+    return is_placeholder(value, literal) or not password and (value.isdigit() or PATH_LIKE.match(value) is not None)
 
 
 def named_value(name, text, kind):
@@ -181,10 +182,11 @@ def named_value(name, text, kind):
     scheme = AUTH_SCHEME.match(value)
     value = unwrap(value[scheme.end():] if scheme else value)
     last = name.upper().replace("-", "_").split("_")[-1]
-    if last == "AUTH" and len(value) < 16 and ":" not in value:  # A mode such as oauth or scram-sha-256, not a credential.
-        return []
-    if last == "HEADER" and HEADER_NAME_VALUE.fullmatch(text.strip()):  # The name of a header, such as X-Api-Key.
-        return []
+    if not is_secret_name(name):  # API_KEY_AUTH or TOKEN_HEADER hold a key whatever it looks like.
+        if last == "AUTH" and len(value) < 16 and ":" not in value:  # A mode such as oauth or scram-sha-256, not a credential.
+            return []
+        if last == "HEADER" and HEADER_NAME_VALUE.fullmatch(text.strip()):  # The name of a header, such as X-Api-Key.
+            return []
     return [(kind, value, "medium")] if is_secret_name(name, block=True) and not skip_named_value(name, value) else []
 
 
@@ -202,9 +204,9 @@ def shape_allows(kind, match, value):
     groups = match.groupdict()
     if groups.get("f"):
         flag = groups["f"].lower()
-        if (flag == "pass" and groups["sep"] != "=") or PATH_LIKE.match(value) or PLAIN_PREFIX.match(flag):
+        if PLAIN_PREFIX.match(flag) or PATH_LIKE.match(value) and "pass" not in flag:
             return False
-        return flag != "key" or looks_random(value)
+        return looks_random(value) if flag == "key" or flag == "pass" and groups["sep"] != "=" else True  # "--pass through" is a word.
     if kind == "Key in a URL" and not EXPLICIT_URL_NAME.search(groups["n"]):
         return not PLAIN_PREFIX.match(groups["n"]) and looks_random(value)
     return True
@@ -255,7 +257,9 @@ def detect(text):
     for kind, pattern in COMPILED_SHAPES:
         for match in pattern.finditer(text):
             value, literal = value_of(match.group("v"))
-            if value and not is_placeholder(value, literal, flag=kind == "Password in a command") and shape_allows(kind, match, value):
+            # Only an unquoted word after a space can be the next flag, not one glued on as in -pVALUE, password=VALUE or user:VALUE.
+            word = kind == "Password in a command" and match.group("v")[0] not in "\"'" and text[match.start("v") - 1].isspace()
+            if value and not is_placeholder(value, literal, flag=word) and shape_allows(kind, match, value):
                 add(kind, value)
     return [(kind, value, conf) for value, (kind, conf) in found.items()]
 
@@ -628,16 +632,21 @@ class Audit:
         self.simple = set()  # Codex configs checked line by line, without tomllib.
 
     def display(self, path):
-        """A printable path. Paths are kept raw until the report, so values are matched before ~ and escaping change them.
-        A folder that holds a long found value, or a secret of its own, is hidden, and the whole path when a value spans folders.
-        Short found values aren't hidden, so they can't be located by elimination."""
-        values = [value for value in self.by_value if len(value) >= 12] + [value for _, value, _ in detect(path)]
-        parts = path.split("/")
-        if any(value in path and not any(value in part for part in parts) for value in values):
-            return "<hidden>"
-        text = "/".join("<hidden>" if detect(part) or any(value in part for value in values) else part for part in parts)
+        """A printable path. Values are matched in the raw path and again after ~ and escaping change it.
+        A folder that holds a long found value, or a secret of its own, is hidden, and the whole path when a value spans folders
+        or the path is too long to check. Short found values aren't hidden, so they can't be located by elimination."""
+        long_values = [value for value in self.by_value if len(value) >= 12]
+
+        def hide(text):
+            values = long_values + [value for _, value, _ in detect(text)]
+            parts = text.split("/")
+            if len(text) > MAX_STRING or any(value in text and not any(value in part for part in parts) for value in values):
+                return "<hidden>"
+            return "/".join("<hidden>" if detect(part) or any(value in part for value in values) else part for part in parts)
+
+        text = hide(path)
         text = "~" + text[len(self.home):] if text.startswith(self.home + os.sep) else text
-        return "/".join(safe(part) for part in text.split("/"))
+        return hide(safe(text))
 
     def record(self, findings, exposure, location, repo=None, projects=()):
         for where, kind, value, conf, program in findings:
@@ -755,7 +764,8 @@ class Audit:
                 for field in ("file", "repo", "project"):
                     if field in location:
                         location[field] = self.display(location[field])
-                location["where"] = ".".join(part if re.sub(r"\[\d+\]", "", part) in KNOWN_KEYS or not any(v in part for v in self.by_value) else "entry" for part in location["where"].split("."))
+                location["where"] = ".".join(part if base in KNOWN_KEYS or not any(v in part or len(base) >= 4 and base in v for v in self.by_value) else "entry"
+                                             for part in location["where"].split(".") for base in [re.sub(r"\[\d+\]", "", part)])
                 program = location["program"]
                 if any(value in program or (len(program) >= 4 and program in value) for value in self.by_value):
                     location["program"] = ""

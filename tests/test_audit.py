@@ -256,6 +256,34 @@ class Detect(unittest.TestCase):
             findings, _, problem = audit.check_config("config.toml", b'\xef\xbb\xbf[mcp_servers.x]\nenv = { API_KEY = "' + PW.encode() + b'" }\n')
             self.assertEqual((len(findings), problem), (1, None))
 
+    def test_leading_dash_is_a_value_unless_it_is_a_separate_word(self):
+        value = "-zq7PloverHarbor"
+        for text in (
+            f"Bash(psql 'host=db.example.com password={value}')",
+            f"Bash(curl -u admin:{value} https://api.example.com)",
+            f"Bash(mysql -h db.example.com -uroot -p{value} app)",
+            f"Bash(tool --password={value})",
+            f"Bash(tool --password '{value}')",
+            f"Bash(sshpass -p '{value}' ssh root@203.0.113.9)",
+        ):
+            self.assertFound(text, value)
+
+    def test_vendor_api_key_headers(self):
+        for name in ("DD-API-KEY", "xi-api-key"):
+            self.assertFound(f'Bash(curl -H "{name}: {PW}" https://api.example.com)', PW)
+
+    def test_random_value_after_a_spaced_pass_flag(self):
+        self.assertFound(f"Bash(redis-cli --pass {PW} -h db.example.com)", PW)
+
+    def test_password_names_keep_path_like_and_brace_values(self):
+        self.assertFound("Bash(PGPASSWORD=ab12/cd34.xy9 psql -h db.example.com)", "ab12/cd34.xy9")
+        self.assertFound("Bash(tool --password ~/s3cr3tPass)", "~/s3cr3tPass")
+        self.assertEqual([v for _, v, _ in audit.named_value("DB_PASSWORD", "x9${!@#pQ7", "x")], ["x9${!@#pQ7"])
+
+    def test_auth_and_header_names_that_are_secret_names(self):
+        self.assertEqual([v for _, v, _ in audit.named_value("API_KEY_AUTH", "zq7-Plover", "x")], ["zq7-Plover"])
+        self.assertEqual([v for _, v, _ in audit.named_value("TOKEN_HEADER", "correct-horse-battery-staple", "x")], ["correct-horse-battery-staple"])
+
 
 class EndToEnd(unittest.TestCase):
     def setUp(self):
@@ -1186,6 +1214,28 @@ class EndToEnd(unittest.TestCase):
         scan.by_value[value] = {}
         self.assertNotIn("Zq9vT2pLk8Hx3mWn", scan.display(value))
         self.assertNotIn("Zq9vT2pLk8Hx3mWn", scan.display(value + "/.mcp.json"))
+
+    def test_value_that_appears_only_after_shortening_or_escaping_is_hidden(self):
+        scan = audit.Audit(str(self.home), str(self.home))
+        scan.by_value["~/Zq9vT2pLk8Hx3mWn"] = {}
+        scan.by_value["my\\tsecret123456"] = {}
+        self.assertNotIn("Zq9vT2pLk8Hx3mWn", scan.display(str(self.home) + "/Zq9vT2pLk8Hx3mWn/.mcp.json"))
+        self.assertNotIn("secret123456", scan.display("/tmp/my\tsecret123456"))
+
+    def test_header_or_env_name_that_is_part_of_a_value_is_hidden(self):
+        self.write("app/.mcp.json", {"mcpServers": {"s": {"headers": {ANTHROPIC[:19]: ANTHROPIC}}}})
+        self.settings(self.home / "app", {"env": {AWS[:18]: AWS}})
+        self.run_audit()
+        for out in (self.output, self.text_report()):
+            self.assertNotIn(ANTHROPIC[:19], out)
+            self.assertNotIn(AWS[:18], out)
+
+    def test_oversized_project_folder_is_hidden(self):
+        folder = "/tmp/" + "a" * 16384 + "/postgres://admin:s3cr3t99@db.example.com"
+        self.write(".claude.json", {"projects": {folder: {"mcpServers": {"s": {"command": "x", "env": {"DB_PASS": "s3cr3t99"}}}}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+        for out in (self.output, self.text_report()):
+            self.assertNotIn("s3cr3t99", out)
 
     def test_program_label_that_ends_a_found_value_is_dropped(self):
         self.settings(self.home / "app", ["Bash(PGPASSWORD=foo/zq7-plover-harbor foo/zq7-plover-harbor)"])
