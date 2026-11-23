@@ -212,7 +212,42 @@ class Detect(unittest.TestCase):
                       "Bearer ${TOKEN}", "/Users/me/.config/creds.json", "ghp_" + "x" * 36):
             self.assertEqual(audit.named_value("OPENAI_API_KEY", value, "x"), [], value)
 
-    def test_trailing_comma_far_from_its_bracket(self):
+    def test_explicit_url_names_keep_every_value(self):
+        for value in ("correct-horse-battery-staple", "JBSWYVDPKHPKXPQW", "aB3d/eF6gH9jK2mN==", "849201746352", "MyKey99.prod", "K9X2M4-91827364"):
+            self.assertFound(f"https://mcp.example.com/mcp?api_key={value}", value)
+        self.assertFound("https://mcp.example.com/mcp?secret=aB3d/eF6gH9jK2mN==", "aB3d/eF6gH9jK2mN==")
+
+    def test_values_that_only_look_like_paths_or_templates(self):
+        self.assertFound("Bash(PGPASSWORD=/s3cr3tP4ss psql -h db.example.com)", "/s3cr3tP4ss")
+        self.assertFound("Bash(PGPASSWORD='Xy{{9kL*2Qa' psql -h db.example.com)", "Xy{{9kL*2Qa")
+        self.assertFound("Bash(PGPASSWORD=prod-db-9999 psql -h db.example.com)", "prod-db-9999")
+        self.assertFound("Bash(PGPASSWORD=0000 psql -h db.example.com)", "0000")
+        base64ish = "/aB3dE6fG9hI2jK5lM8nO1pQ4rS7tU0vW3xY6zA9="
+        self.assertEqual([v for _, v, _ in audit.named_value("AWS_SECRET_ACCESS_KEY", base64ish, "x")], [base64ish])
+
+    def test_ordinary_commands_and_settings_are_not_secrets(self):
+        for text in (
+            "Bash(aws s3api get-object --bucket prod-data --key exports/2026/users.csv /tmp/users.csv)",
+            "Bash(curl --key /Users/me/.certs/client.key https://api.example.com)",
+            "Bash(gcloud logging read --page-token Cg0I9c3R)",
+            "Bash(aws logs describe --next-token Cg0I9c3RxYz12345678)",
+            'Bash(curl -H "Authorization: Digest username=alice" https://api.example.com)',
+            'Bash(curl -H "Authorization: AWS4-HMAC-SHA256 Credential=abc" https://s3.example.com)',
+            'Bash(curl -H "Authorization: ApiKey" https://api.example.com)',
+            'Bash(curl -H "X-Publishable-Key: pk12345abcdef" https://api.example.com)',
+            "https://api.example.com/items?sortKey=createdAt",
+            "https://api.example.com/list?pageToken=Cg0I9c3R",
+            "https://api.example.com/list?nextPageToken=Cg0I9c3RxYz12345678",
+            "https://docs.example.com/mcp?key=Architecture",
+            "https://api.example.com/keys?publicKey=pk12345",
+        ):
+            self.assertEqual(audit.detect(text), [], text)
+        for name, value in (("JIRA_PROJECT_KEY", "ACME"), ("AUTH_HEADER", "X-Api-Key"), ("MCP_AUTH", "oauth"), ("PG_AUTH", "scram-sha-256"),
+                            ("X-Publishable-Key", "pk12345abcdef"), ("X-Public-Key", "pk12345abcdef"), ("Idempotency-Key", OPAQUE),
+                            ("bearer_token_env_var", "MCP_TOKEN_2"), ("env_key", "CUSTOM_KEY_1")):
+            self.assertEqual(audit.detect_header(name, value), [], name)
+
+
         self.assertEqual(audit.parse(b'{"a": 1,' + b" " * 300 + b"}"), {"a": 1})
 
     def test_byte_order_mark(self):
@@ -1129,6 +1164,60 @@ class EndToEnd(unittest.TestCase):
         self.write("app/.mcp.json", {"mcpServers": {"x": {"command": "srv", "args": ["--password", f'a "{PW}" pass']}}})
         self.assertEqual(len(self.run_audit()["secrets"]), 1)
 
+    def test_json_project_key_is_never_a_label(self):
+        self.write(".claude.json", {"projects": {
+            '{"Authorization": "s3cr3t99"}': {"mcpServers": {"s": {"command": "x", "env": {"API_KEY": PW}}}},
+            '{"X-Api-Key": "my\\u0073ecret123456"}': {"mcpServers": {"s": {"command": "x", "env": {"API_KEY": PW + "2"}}}}}})
+        self.run_audit()
+        for out in (self.output, self.text_report()):
+            for piece in ("s3cr3t99", "u0073ecret", "ecret123456"):
+                self.assertNotIn(piece, out)
+
+    def test_value_with_a_tab_in_a_project_path_is_hidden(self):
+        value = "my\tsecret123456"
+        self.write(".claude.json", {"projects": {f"/tmp/{value}": {"mcpServers": {"s": {"command": "x", "env": {"API_KEY": value}}}}}})
+        self.run_audit()
+        for out in (self.output, self.text_report()):
+            self.assertNotIn("secret123456", out)
+
+    def test_value_under_the_home_folder_is_hidden_before_shortening(self):
+        value = str(self.home) + "/Zq9vT2pLk8Hx3mWn"
+        scan = audit.Audit(str(self.home), str(self.home))
+        scan.by_value[value] = {}
+        self.assertNotIn("Zq9vT2pLk8Hx3mWn", scan.display(value))
+        self.assertNotIn("Zq9vT2pLk8Hx3mWn", scan.display(value + "/.mcp.json"))
+
+    def test_program_label_that_ends_a_found_value_is_dropped(self):
+        self.settings(self.home / "app", ["Bash(PGPASSWORD=foo/zq7-plover-harbor foo/zq7-plover-harbor)"])
+        self.assertNotIn("zq7-plover-harbor", self.text_report())
+
+    def test_flag_with_a_quoted_value_in_one_arg(self):
+        self.write("app/.mcp.json", {"mcpServers": {"x": {"command": "srv", "args": [f'--api-key="{PW}"']}}})
+        self.assertEqual(len(self.run_audit()["secrets"]), 1)
+
+    def test_linked_project_settings_are_listed_when_scanning_a_project(self):
+        target = self.settings(self.home / "elsewhere", [GH])
+        link = self.home / "proj" / ".claude" / "settings.local.json"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(target)
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.home / "proj"), "--json"], env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(len(json.loads(result.stdout)["scanned"]["skipped_links"]), 1)
+
+    def test_broken_link_to_main_settings_is_listed(self):
+        (self.home / ".claude").mkdir()
+        (self.home / ".claude" / "settings.json").symlink_to(self.home / "missing.json")
+        self.assertEqual(len(self.run_audit()["scanned"]["skipped_links"]), 1)
+
+    def test_committed_backup_reads_only_mcp_servers(self):
+        repo = self.home / ".claude"
+        self.write(".claude/backups/.claude.json.backup.1", {"history": [{"display": f"my key is {ANTHROPIC}"}], "mcpServers": {}})
+        self.git(repo, "init", "-q", "-b", "main")
+        self.git(repo, "add", "backups/.claude.json.backup.1")
+        self.git(repo, "commit", "-qm", "backup")
+        report = self.run_audit()
+        self.assertEqual(report["secrets"], [])
+        self.assertEqual(report["scanned"]["incomplete_details"], [])
+
     def test_tracked_mcp_json_gets_its_own_hint(self):
         repo = self.repo("proj")
         (repo / ".mcp.json").write_text(json.dumps(self.server(GITHUB_PERSONAL_ACCESS_TOKEN=GH)))
@@ -1154,6 +1243,19 @@ class OldPython(unittest.TestCase):
         self.assertEqual(problem, "simple")
         self.assertEqual(sorted(f[2] for f in findings), [PW, PW + "2"])
         self.assertEqual(sorted(f[0] for f in findings), ["line 3", "line 4"])
+
+    def test_codex_env_var_names_are_not_values(self):
+        text = '[mcp_servers.r]\nurl = "https://mcp.example.com/mcp"\nbearer_token_env_var = "MCP_TOKEN_2"\n[model_providers.c]\nenv_key = "CUSTOM_KEY_1"\n'
+        saved = sys.modules.get("tomllib")
+        sys.modules["tomllib"] = None
+        try:
+            findings, _, _ = audit.check_config("config.toml", text.encode())
+        finally:
+            if saved is None:
+                del sys.modules["tomllib"]
+            else:
+                sys.modules["tomllib"] = saved
+        self.assertEqual(findings, [])
 
 
 if __name__ == "__main__":
