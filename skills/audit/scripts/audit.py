@@ -127,7 +127,7 @@ LIMITS = [
     "Whether a commit was pushed comes from this clone's remote branches as of its last fetch.",
     "A clean result doesn't prove a key never leaked. Keys in unusual shapes can be missed. Not checked: keys inside a URL path, request data sent with curl -d, passwords given to altool, security or mongosh, and some keys set as NAME=value at the start of a command.",
     "Agent transcripts, memory files and .env files were not scanned. In ~/.claude.json and its backups only MCP server settings were.",
-    "MCP configs under other names were not found, such as codex/config.toml in a dotfiles repo, or MCP servers kept in VS Code's settings.json.",
+    "MCP configs under other names were not found, such as codex/config.toml in a dotfiles repo, MCP servers kept in VS Code's settings.json, or GitHub Copilot CLI's ~/.copilot/mcp-config.json.",
     "Links were followed only for the main config files in the home folder.",
     "No key was tested. A finding means it looks like a secret, not that it still works.",
     "Only the first 16 KB of each setting was checked.",
