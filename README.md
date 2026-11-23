@@ -32,6 +32,7 @@ It's one Markdown skill, [`skills/fidelius/SKILL.md`](skills/fidelius/SKILL.md).
 - `accio <project> <command>` runs a command with that project's keys as environment variables.
 - `accio import` opens Fidelius's Import preview for a `.env`. Nothing is saved until you click Import.
 - `accio export --example` writes a `.env.example` with the variable names only.
+- When you add an MCP server that needs a key, the skill starts it through `accio <project> -- <server command>` with `claude mcp add` or `codex mcp add`. For Claude Desktop, Cursor and other apps it shows you the entry to add. Either way the key stays out of the MCP config. A server reached by URL with a key in a header isn't covered. The server gets every key in that project plus `shared`, so give it a project that holds only what it needs.
 
 A command run through `accio` gets your keys, and it may send them to the service it calls, the same as it would with a `.env`.
 
