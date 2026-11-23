@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from urllib.parse import unquote
 
 SETTINGS_NAMES = ("settings.local.json", "settings.json")
 SKIP_DIRS = {"node_modules", ".Trash", "Trash", ".cache", ".npm", ".venv", "venv", "__pycache__", "DerivedData", "Pods", "build.noindex"}
@@ -42,6 +43,7 @@ HISTORY_PATHS = tuple(":(glob)**/" + name for name in (
     ".gemini/settings.json", ".codex/config.toml"))
 ROOT_HISTORY = {".claude": SETTINGS_NAMES, ".codex": ("config.toml",), ".gemini": ("settings.json",)}  # A repo that is itself a config folder.
 HEADER_PARENTS = {"headers", "http_headers"}
+NAME_PARENTS = {"env_http_headers"}  # Codex: header name = the name of the variable that holds the value.
 
 # Settings keys safe to name in a report. Any other key is untrusted text and is shown by position.
 KNOWN_KEYS = {
@@ -49,7 +51,7 @@ KNOWN_KEYS = {
     "type", "apiKeyHelper", "statusLine", "mcpServers", "args", "url", "headers", "servers", "mcp_servers", "projects", "inputs", "http_headers",
     "serverUrl", "httpUrl", "oauth", "clientId", "client_id", "clientSecret", "client_secret", "cwd", "transport", "timeout", "trust", "disabled",
     "enabled", "autoApprove", "alwaysAllow", "description", "envFile", "bearer_token_env_var", "startup_timeout_sec", "tool_timeout_sec",
-    "enabled_tools", "disabled_tools", "includeTools", "excludeTools", "scopes", "authProviderType",
+    "enabled_tools", "disabled_tools", "includeTools", "excludeTools", "scopes", "authProviderType", "primaryApiKey",
 }
 
 PROVIDERS = [
@@ -77,7 +79,7 @@ COMMAND_SHAPES = [
     ("Password in a command", r"\bsshpass\s+-p\s*" + VALUE),
     ("Password in a command", r"\b(?:mysql|mysqldump|mysqladmin|mariadb)\b[^|;&]*?\s-p" + VALUE),
     ("Password in a command", r"(?i)\s--(?P<f>key|pass|(?:[a-z0-9]+[-_])*" + FLAG_NAMES + r")(?P<sep>[= ])\s*" + VALUE),
-    ("Password in a command", r"(?<![-\w])password=" + VALUE),
+    ("Password in a command", r"(?i)(?<![-\w])(?:password|(?P<p>pwd))=" + VALUE),
     ("Password in a command", r"\bredis-cli\b[^|;&]*?\s-a\s+" + VALUE),
     ("Password in a command", r"\bdocker\s+login\b[^|;&]*?\s(?:-p|--password)\s+" + VALUE),
     ("Password in a command", r"\b(?:curl|wget)\b[^|;&]*?\s(?:-u|--user)\s+['\"]?[^\s:'\"]+:(?P<v>[^\s'\")]+)"),
@@ -92,20 +94,26 @@ SAFE_HEADER_NAME = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,48}")
 COMPILED_PROVIDERS = [(kind, re.compile(rx)) for kind, rx in PROVIDERS]
 COMPILED_SHAPES = [(kind, re.compile(rx)) for kind, rx in COMMAND_SHAPES]
 LOOPBACK = re.compile(r"\b(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|host\.docker\.internal)\b|\[::1\]", re.I)
-ANY_HOST = re.compile(r"\b(?:[a-z0-9-]{1,63}\.)+[a-z]{2,}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", re.I)
+ANY_HOST = re.compile(r"\b(?:[a-z0-9-]{1,63}\.){1,10}[a-z]{2,}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", re.I)
 PLACEHOLDER = re.compile(r"(?i)(?:your|insert|enter|paste)[-_ ].*|my[-_](?:password|secret|token|key)\S*|.*[-_ ]here|example(?:[-_]\S*)?|change[-_ ]?me"
                          r"|replace[-_ ]?(?:me|this|with).*|placeholder|redacted|todo|tbd|none|null|empty|dummy|fake|sample|password|secret|token"
                          r"|bearer|basic|test|true|false|apikey|api-key|digest|oauth|negotiate|ntlm|aws4-hmac-sha256|op://.*|%\w+%"
+                         r"|ollama|lm-?studio|not[-_]needed|sk-no-key-required|(?:dummy|test|fake)[-_]key"
                          r"|(?-i:[A-Z]+(?:_[A-Z]+)+)")
 FILLER = re.compile(r"(?i)(?:[a-z][a-z0-9]{0,5}[-_])*([x*._#-])\1{2,}")  # "sk-xxx", "ghp_xxxx" or "...".
 TEMPLATE = re.compile(r"\{\{[^{}]*\}\}")
-BRACED_VARIABLE = re.compile(r"\$\{[^{}]+\}")
-# A file path, not a key: under a usual top folder, relative to ~ or ., or a relative path to a file. Base64 keys can start with "/".
-PATH_LIKE = re.compile(r"(?:~|\.\.?)/|/(?:Users|home|etc|var|tmp|opt|run|usr|Library|private|mnt|srv|Volumes|root)/|[\w.-]+(?:/[\w.-]+)+\.[A-Za-z0-9]{1,5}$")
+BRACED_VARIABLE = re.compile(r"\$\{[^{}]+\}|\$\{[A-Za-z_][A-Za-z0-9_]*(?:[:?+=-]|$)")
+# A file path, not a key: under a usual top folder, relative to ~ or ., a relative path to a file, or a key file's name. Base64 keys can start with "/".
+PATH_LIKE = re.compile(r"(?:~|\.\.?)/|/(?:Users|home|etc|var|tmp|opt|run|usr|Library|private|mnt|srv|Volumes|root)/|[\w.-]+(?:/[\w.-]+)+\.[A-Za-z0-9]{1,5}$"
+                       r"|[\w-]+(?:\.[\w-]+)*\.(?:p8|pem|p12|pfx|key|crt|cer|der|jks|ppk)$")
 EXPLICIT_URL_NAME = re.compile(r"(?i)(?:api[_-]?key|apikey|(?:access|auth|api|private)[_-]?token|secret|password)$")
 PLAIN_PREFIX = re.compile(r"(?i)[_.-]?(?:sort|order|cache|project|page|next|starting|continuation|sync|resume|public|publishable|partition|routing|idempotency)")
 PLAIN_KEY_PARTS = {"PROJECT", "SPACE", "TEAM", "BOARD", "CACHE", "SORT", "PARTITION", "ROUTING", "IDEMPOTENCY", "OBJECT", "S3"}  # *_KEY names that hold no secret.
-HEADER_NAME_VALUE = re.compile(r"[A-Za-z]+(?:-[A-Za-z]+)+")
+HEADER_NAME_VALUE = re.compile(r"(?i:x-[a-z0-9-]+|authorization|proxy-authorization|cookie)|[A-Z][A-Za-z0-9]*(?:-[A-Z][A-Za-z0-9]*)+")
+AUTH_MODE = re.compile(r"(?i)o?auth2?|basic|bearer|digest|ntlm|negotiate|kerberos|gssapi|scram-sha-(?:1|256)(?:-plus)?|md5|password|trust|peer|ident"
+                       r"|cert|mtls|tls|iam|sigv4|jwt|oidc|saml|ldap|enabled|disabled|on|off|true|false|none|header|query|cookie|token|api[-_]?key")
+ENV_FLAG = re.compile(r"(?:(?<![\w-])-e|(?<![\w-])--env|(?<![\w-])env)(?:\s+|=)[\"']?$")  # docker -e, --env and env before NAME=value.
+NOT_PASS = {"BYPASS", "COMPASS", "ENCOMPASS", "SURPASS", "TRESPASS", "OVERPASS", "UNDERPASS"}
 VARIABLE = re.compile(r"(?:^|\s)\$\{?[A-Za-z_]")
 DEFAULT_VALUE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=]([^}]+)\}")
 AUTH_SCHEME = re.compile(r"(?i)(?:bearer|basic|token|apikey|api-key|key)\s+")
@@ -143,13 +151,14 @@ def is_secret_name(name, block=False):
     """block: the name of an env or headers entry, where a KEY, PAT or AUTH name nearly always holds a key."""
     upper = name.upper().replace("-", "_")
     parts = upper.split("_")
-    if (parts[-1] in ("FILE", "PATH", "NAME", "URL", "ARN", "ID") or "PUBLIC" in parts or "PUBLISHABLE" in parts
+    if (parts[-1] in ("FILE", "PATH", "NAME", "URL", "ARN", "ID", "COMMAND", "CMD", "ENDPOINT", "EXPIRY", "DIR") or "PUBLIC" in parts or "PUBLISHABLE" in parts
             or parts[-2:] == ["ENV", "VAR"] or upper == "ENV_KEY"):  # Codex's bearer_token_env_var and env_key hold a variable's name.
         return False
     if block and (upper in ("AUTHORIZATION", "PROXY_AUTHORIZATION", "COOKIE") or parts[-1] in ("PAT", "AUTH", "CREDENTIAL", "CREDENTIALS", "HEADER")
                   or parts[-1] == "KEY" and not (len(parts) > 1 and parts[-2] in PLAIN_KEY_PARTS)):
         return True
-    if any(p in ("PASS", "SSHPASS", "PGPASS", "APIKEY") or p.endswith(("PASSWORD", "PASSWD", "SECRET", "TOKEN")) for p in parts):
+    if (any(p in ("PASS", "APIKEY") or p.endswith(("PASSWORD", "PASSWD", "PASSPHRASE", "SECRET", "TOKEN")) or p.endswith("PASS") and p not in NOT_PASS
+            for p in parts) or parts[-1] == "PW"):
         return True
     if len(parts) > 1 and "PWD" in parts:
         return True
@@ -161,6 +170,8 @@ def is_placeholder(value, literal=False, flag=False):
     flag: the value is an unquoted word of its own after a flag, so a leading "-" makes it the next flag."""
     if len(value) < 4 or PLACEHOLDER.fullmatch(value) or FILLER.fullmatch(value) or (value[0] == "<" and value[-1] == ">"):
         return True
+    if value[0] + value[-1] in ("{}", "[]") and is_placeholder(value[1:-1], literal):  # {YOUR_API_KEY}
+        return True
     return (not literal and bool(value[0] in "$<*" or BRACED_VARIABLE.search(value) or VARIABLE.search(value) or TEMPLATE.search(value))) or (flag and value[0] == "-")
 
 
@@ -171,9 +182,12 @@ def unwrap(value):
 
 
 def skip_named_value(name, value, literal=False):
-    """A number under a TOKEN-style name is usually a limit, and a path names a file. Under a password name either can be real."""
-    password = "PASS" in name.upper() or "PWD" in name.upper()
-    return is_placeholder(value, literal) or not password and (value.isdigit() or PATH_LIKE.match(value) is not None)
+    """A number under a TOKEN-style name is usually a limit, and a path names a file. Under a password name a number can be real,
+    and so can a path under a PASSWORD, PASSPHRASE, PASS or PW name. PWD and PASSWD names often hold a folder or an htpasswd file."""
+    upper = name.upper().replace("-", "_")
+    password = "PASS" in upper or "PWD" in upper or upper.split("_")[-1] == "PW"
+    path_ok = re.search(r"PASSWORD|PASSPHRASE|(?:^|_)(?:PASS|PW)(?:_|$)", upper)
+    return is_placeholder(value, literal) or not password and value.isdigit() or not path_ok and PATH_LIKE.match(value) is not None
 
 
 def named_value(name, text, kind):
@@ -182,11 +196,13 @@ def named_value(name, text, kind):
     scheme = AUTH_SCHEME.match(value)
     value = unwrap(value[scheme.end():] if scheme else value)
     last = name.upper().replace("-", "_").split("_")[-1]
-    if not is_secret_name(name):  # API_KEY_AUTH or TOKEN_HEADER hold a key whatever it looks like.
-        if last == "AUTH" and len(value) < 16 and ":" not in value:  # A mode such as oauth or scram-sha-256, not a credential.
-            return []
-        if last == "HEADER" and HEADER_NAME_VALUE.fullmatch(text.strip()):  # The name of a header, such as X-Api-Key.
-            return []
+    if last == "AUTH" and (AUTH_MODE.fullmatch(value) or not is_secret_name(name) and len(value) < 16 and ":" not in value):
+        return []  # A mode such as oauth or scram-sha-256, not a credential. API_KEY_AUTH can still hold a key.
+    if last == "HEADER" and HEADER_NAME_VALUE.fullmatch(text.strip()):  # The name of a header, such as X-Api-Key.
+        return []
+    whole_jwt = JWT.fullmatch(value)
+    if whole_jwt and not jwt_kind(whole_jwt.group(1)):  # A Supabase anon key is public by design.
+        return []
     return [(kind, value, "medium")] if is_secret_name(name, block=True) and not skip_named_value(name, value) else []
 
 
@@ -204,9 +220,11 @@ def shape_allows(kind, match, value):
     groups = match.groupdict()
     if groups.get("f"):
         flag = groups["f"].lower()
-        if PLAIN_PREFIX.match(flag) or PATH_LIKE.match(value) and "pass" not in flag:
+        if PLAIN_PREFIX.match(flag) or PATH_LIKE.match(value) and not flag.endswith("password"):  # --passwd ~/.vnc/passwd names a file.
             return False
         return looks_random(value) if flag == "key" or flag == "pass" and groups["sep"] != "=" else True  # "--pass through" is a word.
+    if groups.get("p") and PATH_LIKE.match(value):  # PWD=/tmp/x is a folder.
+        return False
     if kind == "Key in a URL" and not EXPLICIT_URL_NAME.search(groups["n"]):
         return not PLAIN_PREFIX.match(groups["n"]) and looks_random(value)
     return True
@@ -252,7 +270,9 @@ def detect(text):
 
     for match in ASSIGNMENT.finditer(text):
         value, literal = value_of(match.group("v"))
-        if value and is_secret_name(match.group("name")) and not skip_named_value(match.group("name"), value, literal):
+        start = match.start("name")
+        block = ENV_FLAG.search(text[max(0, start - 16):start]) is not None  # docker -e NAME=value sets an env entry.
+        if value and is_secret_name(match.group("name"), block) and not skip_named_value(match.group("name"), value, literal):
             add("Password in a command", value)
     for kind, pattern in COMPILED_SHAPES:
         for match in pattern.finditer(text):
@@ -297,9 +317,12 @@ def walk_strings(node, where="", key="", parent="", command=""):
 
 
 def command_hint(text):
-    """The program a saved Bash rule runs, such as psql. Empty unless it is plainly just a program name."""
+    """The program a saved Bash rule runs, such as psql. Empty unless it is plainly just a program name.
+    A quote, backslash or $( joins words, so any of them before the program word gives no name."""
     match = re.match(r"Bash\((.*)\)$", text, re.S)
     for word in match[1].split() if match else []:
+        if re.search(r"[\"'\\`()]", word):
+            return ""
         if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", word):
             name = os.path.basename(word)
             return name if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,31}", name) and not detect(name) else ""
@@ -318,10 +341,16 @@ def scan_document(document):
                     hits += detect_header(name, value)
         if not hits and parent in HEADER_PARENTS:
             hits = detect_header(key, text)
+        if not hits and parent == "env" and key.upper().endswith("HEADERS"):  # OTEL_EXPORTER_OTLP_HEADERS: name=value,name=value.
+            for pair in text[:MAX_STRING].split(","):
+                name, _, value = pair.partition("=")
+                hits += detect_header(name.strip(), unquote(value.strip())) if value else []
         if not hits and parent == "env":
             hits = named_value(key, text, "Secret in an env setting")
         if not hits and re.sub(r"[-_]", "", key).lower() == "clientsecret":
             hits = named_value(key, text, "OAuth client secret")
+        if not hits and key and parent not in HEADER_PARENTS | NAME_PARENTS | {"env"}:  # bearer_token, apiKey or token on a server entry.
+            hits = named_value(key, text, "Secret in a setting")
         group = re.sub(r"\[\d+\]$", "", where) if key == "args" else where  # An args item and the joined command line are one place.
         for kind, value, conf in hits:
             if (group, value) not in seen:
@@ -396,6 +425,14 @@ def discover(root, home):
             found["main"].add(path)
         elif os.path.lexists(path):
             add_file(path, found[bucket], found["links"])
+    try:
+        names = os.listdir(root) if at_home else []
+    except OSError:
+        names = []
+    for name in names:  # A linked ~/.claude is followed for its settings above, so its backups count too.
+        path = os.path.join(root, name)
+        if (name == ".claude" or name.startswith(".claude-")) and os.path.islink(path) and os.path.isdir(path):
+            add_backups(os.path.realpath(path), found)
     for dirpath, dirnames, filenames in os.walk(root, onerror=errors.append, followlinks=False):
         folder, names = os.path.basename(dirpath), set(filenames)
         for parent, name in MCP_NAMES:
@@ -425,7 +462,7 @@ def discover(root, home):
             if ".git" in dirnames:
                 dirnames.remove(".git")
     config = os.environ.get("CLAUDE_CONFIG_DIR")
-    if config:
+    if config and at_home:  # A scan of one folder reports only what is in it.
         folder = os.path.realpath(os.path.expanduser(config))
         for name, bucket in [(name, "settings") for name in SETTINGS_NAMES] + [(".claude.json", "mcp")]:
             path = os.path.join(folder, name)
@@ -488,10 +525,12 @@ def parse(raw):
 
 
 def mcp_only(document):
-    """The MCP server parts of ~/.claude.json. The rest holds prompt history, which isn't settings."""
+    """The MCP server parts of ~/.claude.json, and the API key it can keep. The rest holds prompt history, which isn't settings."""
     if not isinstance(document, dict):
         return None
     view = {"mcpServers": document["mcpServers"]} if isinstance(document.get("mcpServers"), dict) else {}
+    if isinstance(document.get("primaryApiKey"), str):
+        view["primaryApiKey"] = document["primaryApiKey"]
     projects = document.get("projects")
     if isinstance(projects, dict):
         view["projects"] = {folder: {"mcpServers": entry["mcpServers"]} for folder, entry in projects.items()
@@ -523,6 +562,8 @@ def read_config(path, name):
 
 def check_config(name, raw):
     """Return (findings, document, problem) for one version of a config file. problem "simple": checked line by line, without tomllib."""
+    if not raw.strip():
+        return [], None, None  # An empty file holds no settings.
     if name.endswith(".toml"):
         try:
             import tomllib
@@ -570,12 +611,13 @@ def git_state(path):
     repo = os.fsdecode(out.rstrip(b"\n"))
     if git(folder, "ls-files", "--error-unmatch", "--", path)[0] == 0:
         return repo, "tracked"
-    code, out = git(folder, "check-ignore", "-v", "--", path)
-    if code == 1:
+    code, out = git(folder, "check-ignore", "-v", "-z", "--stdin", stdin=os.fsencode(path) + b"\0")
+    fields = os.fsdecode(out).split("\0")
+    if code == 1 or code == 0 and len(fields) > 2 and fields[2].startswith("!"):  # -v also names a matching !pattern.
         return repo, "not ignored"
     if code != 0:
         return repo, "could not check git"
-    source = os.fsdecode(out).split(":", 1)[0]
+    source = fields[0]
     in_repo = os.path.basename(source) == ".gitignore" and not source.startswith((".git/", "~")) and not os.path.isabs(source)
     return repo, "ignored by the repo" if in_repo else "ignored on this machine only"
 
@@ -629,21 +671,24 @@ class Audit:
         self.incomplete = {}
         self.checkouts = {}
         self.history_files = {}  # repo id -> paths of configs found on disk, so their history is read even if git no longer tracks them.
-        self.simple = set()  # Codex configs checked line by line, without tomllib.
+        self.simple = set()  # (path, suffix) of Codex configs checked line by line, without tomllib.
+        self.whole = set()  # Repos whose history couldn't be read at all.
+        self.partial = {}  # repo id -> paths with a version that couldn't be read.
 
     def display(self, path):
-        """A printable path. Values are matched in the raw path and again after ~ and escaping change it.
-        A folder that holds a long found value, is 8+ characters of one, or holds a secret of its own, is hidden, and the whole path when a value spans folders
-        or the path is too long to check. Short found values aren't hidden, so they can't be located by elimination."""
-        long_values = [value for value in self.by_value if len(value) >= 12]
+        """A printable path. Values are matched in the raw path and again after ~ and escaping change it, ignoring case.
+        A folder that holds a found value of 6+ characters, is 8+ characters of one, or holds a secret of its own, is hidden, and the whole path
+        when a value spans folders or the path is too long to check. Values under 6 characters aren't hidden, so they can't be located by elimination."""
+        long_values = [value.lower() for value in self.by_value if len(value) >= 6]
 
         def hide(text):
-            values = long_values + [value for _, value, _ in detect(text)]
-            parts = text.split("/")
-            if len(text) > MAX_STRING or any(value in text and not any(value in part for part in parts) for value in values):
+            values = long_values + [value.lower() for _, value, _ in detect(text)]
+            lower = text.lower()
+            parts = lower.split("/")
+            if len(text) > MAX_STRING or any(value in lower and not any(value in part for part in parts) for value in values):
                 return "<hidden>"
-            return "/".join("<hidden>" if detect(part) or any(value in part or (len(part) >= 8 and part in value) for value in values)
-                            else part for part in parts)
+            return "/".join("<hidden>" if detect(raw) or any(value in part or (len(part) >= 8 and part in value) for value in values)
+                            else raw for raw, part in zip(text.split("/"), parts))
 
         text = hide(path)
         text = "~" + text[len(self.home):] if text.startswith(self.home + os.sep) else text
@@ -676,10 +721,14 @@ class Audit:
         folder = os.path.basename(repo)
         paths = HISTORY_PATHS + ROOT_HISTORY.get(".claude" if folder.startswith(".claude-") else folder, ()) + tuple(
             ":(literal)" + path for path in sorted(self.history_files.get(rid, ())))
-        code, out = git(repo, "log", "--all", "--reflog", "--full-history", "--no-renames", "--diff-merges=first-parent", "-z", "--format=%H", "--name-only",
-                        "--diff-filter=d", f"--max-count={MAX_COMMITS}", "--", *paths, timeout=180)
+        for merges in (["--diff-merges=first-parent"], []):  # Git before 2.31 doesn't know --diff-merges.
+            code, out = git(repo, "log", "--all", "--reflog", "--full-history", "--no-renames", *merges, "-z", "--format=%H", "--name-only",
+                            "--diff-filter=d", f"--max-count={MAX_COMMITS}", "--", *paths, timeout=180)
+            if code == 0:
+                break
         if code != 0:
             self.incomplete.setdefault(rid, "git couldn't read its history")
+            self.whole.add(rid)
             return
         commit, commits = None, 0
         for token in os.fsdecode(out).split("\0"):
@@ -691,26 +740,36 @@ class Audit:
                 self.scan_version(repo, rid, commit, path)
         if commits >= MAX_COMMITS:
             self.incomplete.setdefault(rid, f"more than {MAX_COMMITS} commits changed these files")
+            self.whole.add(rid)
 
     def scan_version(self, repo, rid, commit, path):
         spec, name = f"{commit}:{path}", config_name(path)
+        code, entry = git(repo, "ls-tree", "-z", "--full-tree", commit, "--", path)
+        if code == 0 and entry and not entry.startswith(b"100"):
+            return  # A committed link holds the path it points to, not settings.
         code, size = git(repo, "cat-file", "-s", spec)
         if code != 0 or not size.strip().isdigit() or int(size) > size_cap(name):
-            self.incomplete.setdefault(rid, "an old version of a settings file is missing or too large")
+            self.failed(rid, path, "an old version of a settings file is missing or too large")
             return
         code, blob = git(repo, "cat-file", "blob", spec)
         if code != 0:
-            self.incomplete.setdefault(rid, "an old version of a settings file is missing or too large")
+            self.failed(rid, path, "an old version of a settings file is missing or too large")
             return
         findings, _, problem = check_config(name, blob)
         if findings is None:
-            self.incomplete.setdefault(rid, "an old version of a settings file couldn't be parsed")
+            self.failed(rid, path, "an old version of a settings file couldn't be parsed")
             return
         if problem:
-            self.simple.add(f"{self.checkouts.get(rid, repo)} (git history)")
+            self.simple.add((self.checkouts.get(rid, repo), " (git history)"))
         if findings:
             exposure = self.history_exposure(repo, commit)
-            self.record(findings, exposure, {"state": "history", "repo": repo, "commit": commit[:10], "file": path, "pushed": exposure == "pushed", "_repo": rid}, repo)
+            self.record(findings, exposure, {"state": "history", "repo": repo, "commit": commit[:10], "file": path, "pushed": exposure == "pushed",
+                                             "_repo": rid, "_path": path}, repo)
+
+    def failed(self, rid, path, reason):
+        """Only findings from the same file are in doubt when one old version of it can't be read."""
+        self.incomplete.setdefault(rid, reason)
+        self.partial.setdefault(rid, set()).add(path)
 
     def run(self, check_github):
         found = discover(self.root, self.home)
@@ -725,12 +784,12 @@ class Audit:
                 skipped.append({"path": path, "reason": problem, "main": path in found["main"]})
                 continue
             if problem:
-                self.simple.add(label)
+                self.simple.add((label, ""))
             projects = ()
-            if name == ".claude.json" and isinstance(document, dict):
-                # A project key that is itself a finding, or looks like JSON, is never printed as a label.
+            if name == ".claude.json" and path in found["main"] and isinstance(document, dict):
+                # Only the user's own config names projects, and only by a full path. A project key that is itself a finding is never a label.
                 keyed = {int(m[1]) for item in findings for m in [re.fullmatch(r"projects\.entry-(\d+)", item[0])] if m}
-                projects = [None if number in keyed or folder.lstrip().startswith(("{", "[")) else folder
+                projects = [folder if number not in keyed and os.path.isabs(folder) and len(folder) <= 1024 else None
                             for number, folder in enumerate(document.get("projects", {}), 1)]
             if collapse:  # Backups repeat each other, so each secret is listed once per backups folder, from the newest copy.
                 findings = [item for item in findings if (label, item[2]) not in done]
@@ -743,8 +802,8 @@ class Audit:
             relative = os.path.relpath(real, os.path.realpath(repo)) if rid else ""
             if rid and not relative.startswith(".."):
                 self.history_files.setdefault(rid, set()).add(relative)
-            self.record(findings, "local", {"state": "current", "file": label, "git": state, "_repo": rid, "_failed": state == "could not check git"},
-                        projects=projects)
+            self.record(findings, "local", {"state": "current", "file": label, "git": state, "_repo": rid, "_path": relative,
+                                            "_failed": state == "could not check git"}, projects=projects)
         seen = set()
         for repo in repos:
             rid = repo_id(repo)
@@ -757,18 +816,20 @@ class Audit:
         return self.report(found, seen, skipped, check_github)
 
     def report(self, found, seen, skipped, check_github):
+        values = [value.lower() for value in self.by_value]
         for secret in self.by_value.values():
             for location in secret["locations"]:
-                failed, repo = location.pop("_failed", False), location.pop("_repo", None)
-                if (failed or repo in self.incomplete) and EXPOSURE_RANK[secret["exposure"]] > EXPOSURE_RANK["unknown"]:
+                failed, repo, path = location.pop("_failed", False), location.pop("_repo", None), location.pop("_path", None)
+                doubt = failed or repo in self.whole or path in self.partial.get(repo, ())
+                if doubt and EXPOSURE_RANK[secret["exposure"]] > EXPOSURE_RANK["unknown"]:
                     secret["exposure"] = "unknown"
                 for field in ("file", "repo", "project"):
                     if field in location:
                         location[field] = self.display(location[field])
-                location["where"] = ".".join(part if base in KNOWN_KEYS or not any(v in part or len(base) >= 4 and base in v for v in self.by_value) else "entry"
-                                             for part in location["where"].split(".") for base in [re.sub(r"\[\d+\]", "", part)])
-                program = location["program"]
-                if any(value in program or (len(program) >= 4 and program in value) for value in self.by_value):
+                location["where"] = ".".join(part if base in KNOWN_KEYS or not any(v in part.lower() or len(base) >= 4 and base.lower() in v for v in values)
+                                             else "entry" for part in location["where"].split(".") for base in [re.sub(r"\[\d+\]", "", part)])
+                program = location["program"].lower()
+                if program and any(value in program or program in value for value in values):
                     location["program"] = ""
         secrets = sorted(self.by_value.values(), key=lambda s: (EXPOSURE_RANK[s["exposure"]], CONFIDENCE_RANK[s["confidence"]], s["kind"]))
         visibility = {}
@@ -786,7 +847,7 @@ class Audit:
             "scanned": {"root": self.display(self.root), "settings_files": len(found["settings"]), "mcp_files": len(found["mcp"]),
                         "backup_files": sum(len(paths) for paths in found["backups"].values()), "repos": len(seen), "unreadable": len(skipped),
                         "skipped_files": [dict(item, path=self.display(item["path"])) for item in skipped],
-                        "needs_python_3_11": sorted(self.display(path) for path in self.simple),
+                        "needs_python_3_11": sorted(self.display(path) + suffix for path, suffix in self.simple),
                         "unreadable_folders": found["errors"], "incomplete_repos": len(self.incomplete), "incomplete_details": details,
                         "skipped_links": [self.display(link) for link in found["links"]]},
             "secrets": secrets,
